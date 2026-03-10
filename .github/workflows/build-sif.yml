@@ -4,20 +4,22 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'popper_llama.def'
+      - 'popper_llama.def'           # rebuild only when .def changes
       - '.github/workflows/build-sif.yml'
-  workflow_dispatch:
+  workflow_dispatch:                  # allow manual trigger from GitHub UI
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write                 # needed to create a release + upload asset
 
     steps:
+      # ── 1. Checkout repo ──────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── 2. Install Apptainer (open-source Singularity fork) ───────────────────
       - name: Install Apptainer
         run: |
           sudo apt-get update -y
@@ -28,18 +30,36 @@ jobs:
           sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
           apptainer --version
 
+      # ── 3. Build the .sif (needs sudo for fakeroot) ───────────────────────────
       - name: Build SIF
         run: |
           sudo apptainer build popper_llama.sif popper_llama.def
           ls -lh popper_llama.sif
 
-      - name: Upload SIF to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: "Latest SIF build"
-          body: |
-            Automatically built from `popper_llama.def`.
-            Commit: ${{ github.sha }}
-          files: popper_llama.sif
-          make_latest: true
+      # ── 4. Upload .sif to Hugging Face (no file size limit) ──────────────────
+      - name: Upload SIF to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install huggingface_hub
+          python3 - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi()
+          # Create the repo if it doesn't exist (model type = generic file storage)
+          api.create_repo(
+              repo_id="popper-llama-container",
+              repo_type="dataset",
+              exist_ok=True,
+              token=os.environ["HF_TOKEN"],
+              private=True,
+          )
+          api.upload_file(
+              path_or_fileobj="popper_llama.sif",
+              path_in_repo="popper_llama.sif",
+              repo_id="popper-llama-container",
+              repo_type="dataset",
+              token=os.environ["HF_TOKEN"],
+          )
+          print("Upload complete!")
+          EOF
