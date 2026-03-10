@@ -1,0 +1,45 @@
+name: Build Singularity Container
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'popper_llama.def'
+      - '.github/workflows/build-sif.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Apptainer
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wget
+          # Install latest Apptainer .deb — no compile needed
+          APPTAINER_VER="1.3.3"
+          wget -q https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer_${APPTAINER_VER}_amd64.deb
+          sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
+          apptainer --version
+
+      - name: Build SIF
+        run: |
+          sudo apptainer build popper_llama.sif popper_llama.def
+          ls -lh popper_llama.sif
+
+      - name: Upload SIF to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest SIF build"
+          body: |
+            Automatically built from `popper_llama.def`.
+            Commit: ${{ github.sha }}
+          files: popper_llama.sif
+          make_latest: true

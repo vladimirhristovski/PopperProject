@@ -1,0 +1,80 @@
+Bootstrap: docker
+From: nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+
+%labels
+    Author      POPPER Gender Bias Experiment
+    Version     1.0
+    Description vLLM + POPPER + Llama 3.1 70B on A100
+
+%post
+    # ── System packages ───────────────────────────────────────────────────────
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-dev \
+        python3-setuptools \
+        git \
+        wget \
+        curl \
+        ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    # ── Upgrade pip ───────────────────────────────────────────────────────────
+    pip3 install --upgrade pip
+
+    # ── PyTorch (CUDA 12.1) ───────────────────────────────────────────────────
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+    # ── vLLM ─────────────────────────────────────────────────────────────────
+    pip3 install vllm
+
+    # ── Hugging Face (for model download) ────────────────────────────────────
+    pip3 install huggingface_hub transformers accelerate
+
+    # ── POPPER (installed from GitHub — not on PyPI) ─────────────────────────
+    pip3 install git+https://github.com/snap-stanford/POPPER.git
+    pip3 install openai anthropic
+
+    # ── Experiment dependencies ───────────────────────────────────────────────
+    pip3 install pandas python-docx scipy numpy
+
+    # ── Clean up ──────────────────────────────────────────────────────────────
+    pip3 cache purge
+
+%environment
+    # CUDA
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+    # Python encoding
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+
+    # Hugging Face — token for gated models (Llama 3.1 70B requires this)
+    # Set on the host before running: export HF_TOKEN="hf_your_token_here"
+    # Singularity inherits host env vars automatically, so this just ensures
+    # the legacy name is also set in case some tools look for it
+    export HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-""}
+
+    # Hugging Face cache — points to a writable location on the host
+    # Override at runtime with: --env HF_HOME=/your/path
+    export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
+    export TRANSFORMERS_CACHE=${HF_HOME}/transformers
+
+    # vLLM
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+%runscript
+    echo "POPPER + vLLM container"
+    echo "Usage:"
+    echo "  Start vLLM server : singularity exec --nv popper_llama.sif vllm serve meta-llama/Llama-3.1-70B-Instruct --port 8000 --host 0.0.0.0 --dtype bfloat16"
+    echo "  Run experiment    : singularity exec --nv popper_llama.sif python3 test3_local.py"
+    exec "$@"
+
+%test
+    python3 -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+    python3 -c "import vllm; print('vLLM: OK')"
+    python3 -c "import popper; print('POPPER: OK')"
+    python3 -c "import pandas, docx; print('pandas + python-docx: OK')"
