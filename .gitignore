@@ -4,7 +4,6 @@ __pycache__/
 *.pyc
 .env
 *.docx
-config.py
 testapi.py
 data/
 .idea/
