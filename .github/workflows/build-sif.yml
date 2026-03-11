@@ -1,21 +1,12 @@
 name: Build Singularity Container
-
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'popper_llama.def'
-      - '.github/workflows/build-sif.yml'
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Apptainer
         run: |
           sudo apt-get update -y
@@ -24,27 +15,14 @@ jobs:
           wget -q https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer_${APPTAINER_VER}_amd64.deb
           sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
           apptainer --version
-
       - name: Build SIF
         run: |
           sudo apptainer build popper_llama.sif popper_llama.def
           ls -lh popper_llama.sif
-
       - name: Upload SIF to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
-          python3 -c "
-import os
-from huggingface_hub import HfApi
-token = os.environ['HF_TOKEN']
-username = os.environ['HF_USERNAME']
-repo_id = username + '/popper-llama-container'
-api = HfApi(token=token)
-api.create_repo(repo_id=repo_id, repo_type='dataset', exist_ok=True, private=True)
-print('Repo ready: ' + repo_id)
-api.upload_file(path_or_fileobj='popper_llama.sif', path_in_repo='popper_llama.sif', repo_id=repo_id, repo_type='dataset')
-print('Upload complete!')
-"
+          python3 -c "import os; from huggingface_hub import HfApi; token=os.environ['HF_TOKEN']; username=os.environ['HF_USERNAME']; repo_id=username+'/popper-llama-container'; api=HfApi(token=token); api.create_repo(repo_id=repo_id,repo_type='dataset',exist_ok=True,private=True); api.upload_file(path_or_fileobj='popper_llama.sif',path_in_repo='popper_llama.sif',repo_id=repo_id,repo_type='dataset'); print('Done!')"
