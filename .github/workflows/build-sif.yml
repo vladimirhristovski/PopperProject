@@ -36,9 +36,23 @@ jobs:
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
-          huggingface-cli login --token $HF_TOKEN
-          huggingface-cli repo create popper-llama-container --type dataset --private || true
-          huggingface-cli upload $HF_USERNAME/popper-llama-container \
-            popper_llama.sif popper_llama.sif \
-            --repo-type dataset
-          echo "Upload complete!"
+          python3 - <<'EOF'
+import os
+from huggingface_hub import HfApi
+
+token = os.environ["HF_TOKEN"]
+username = os.environ["HF_USERNAME"]
+repo_id = f"{username}/popper-llama-container"
+
+api = HfApi(token=token)
+api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True, private=True)
+print(f"Repo ready: {repo_id}")
+
+api.upload_file(
+    path_or_fileobj="popper_llama.sif",
+    path_in_repo="popper_llama.sif",
+    repo_id=repo_id,
+    repo_type="dataset",
+)
+print("Upload complete!")
+EOF
