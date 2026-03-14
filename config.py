@@ -4,7 +4,7 @@ HF_TOKEN = ""
 
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 OPENAI_MODEL = "gpt-4o"
-LOCAL_MODEL = "meta-llama/Llama-3.1-70B-Instruct"
+LOCAL_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 LOCAL_PORT = 8000
 LOCAL_HOST = "localhost"
 
