@@ -2,10 +2,9 @@ import os
 import re
 import time
 import socket
-import subprocess
-import sys
-import signal
-import shutil
+import threading
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from popper import Popper
 from config import (
@@ -16,74 +15,125 @@ from config import (
 
 os.environ["HF_TOKEN"] = HF_TOKEN
 os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
-vllm_proc = None
+
+_model = None
+_tokenizer = None
 
 
-def start_vllm():
-    global vllm_proc
+def load_model():
+    global _model, _tokenizer
+    print(f"Loading model: {LOCAL_MODEL}")
+    print("This may take several minutes on first run...")
 
-    vllm_bin = shutil.which("vllm")
-    if vllm_bin:
-        cmd = [vllm_bin, "serve", LOCAL_MODEL]
-    else:
-        cmd = [sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-               "--model", LOCAL_MODEL]
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
 
-    cmd += [
-        "--port", str(LOCAL_PORT),
-        "--host", LOCAL_HOST,
-        "--dtype", "bfloat16",
-        "--max-model-len", "4096",
-    ]
+    _tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL)
+    _model = AutoModelForCausalLM.from_pretrained(
+        LOCAL_MODEL,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    print("Model loaded successfully!")
 
-    print(f"Starting vLLM: {' '.join(cmd)}")
 
-    env = os.environ.copy()
-    env["HF_TOKEN"] = HF_TOKEN
-    env["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
+class OpenAIHandler(BaseHTTPRequestHandler):
 
-    vllm_proc = subprocess.Popen(cmd, env=env)
+    def log_message(self, format, *args):
+        pass
 
-    print("Waiting for vLLM to be ready (first run downloads model ~140GB)...")
-    for _ in range(600):
-        if vllm_proc.poll() is not None:
-            print("ERROR: vLLM process exited unexpectedly. Check output above.")
-            return False
+    def do_GET(self):
+        if self.path == "/v1/models":
+            body = json.dumps({
+                "object": "list",
+                "data": [{"id": LOCAL_MODEL, "object": "model"}]
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/v1/chat/completions":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
+            data = json.loads(raw)
+
+            messages = data.get("messages", [])
+            max_tokens = data.get("max_tokens", 1024)
+            temperature = data.get("temperature", 0.7)
+
+            import torch
+
+            text = _tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
+
+            with torch.no_grad():
+                outputs = _model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=max(temperature, 1e-6),
+                    do_sample=temperature > 0,
+                    pad_token_id=_tokenizer.eos_token_id,
+                )
+
+            response_text = _tokenizer.decode(
+                outputs[0][inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True
+            )
+
+            body = json.dumps({
+                "id": "chatcmpl-direct",
+                "object": "chat.completion",
+                "model": LOCAL_MODEL,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": response_text},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            }).encode()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+
+def start_direct_server():
+    load_model()
+
+    server = HTTPServer((LOCAL_HOST, LOCAL_PORT), OpenAIHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    for _ in range(30):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
             if s.connect_ex((LOCAL_HOST, LOCAL_PORT)) == 0:
                 s.close()
-                print("vLLM is ready!")
+                print("Server is ready!")
                 return True
             s.close()
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(1)
 
-    print("ERROR: vLLM did not start within 20 minutes.")
+    print("ERROR: Server did not start.")
     return False
-
-
-def stop_vllm():
-    global vllm_proc
-    if vllm_proc and vllm_proc.poll() is None:
-        print("\nStopping vLLM...")
-        vllm_proc.terminate()
-        try:
-            vllm_proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            vllm_proc.kill()
-        print("vLLM stopped.")
-
-
-def _handle_signal(sig, frame):
-    stop_vllm()
-    sys.exit(0)
-
-
-signal.signal(signal.SIGTERM, _handle_signal)
-signal.signal(signal.SIGINT, _handle_signal)
 
 
 def check_data():
@@ -328,9 +378,9 @@ def _save_text_report(results, total_time, results_file, model_name):
     print(f"Text report saved to: {txt}")
 
 
-def run(results_file="results_local.csv"):
+def run(results_file="results_direct.csv"):
     print("=" * 70)
-    print(f"POPPER — Test 3 vLLM: ({LOCAL_MODEL})")
+    print(f"POPPER — Test 3 Direct: ({LOCAL_MODEL})")
     print("=" * 70)
 
     missing = check_data()
@@ -339,88 +389,85 @@ def run(results_file="results_local.csv"):
         print("Run: python3 prepare_data.py")
         return
 
-    try:
-        if not start_vllm():
-            return
+    if not start_direct_server():
+        print("ERROR: Could not start server.")
+        return
 
-        os.environ["OPENAI_API_KEY"] = "vllm"
-        os.environ["OPENAI_BASE_URL"] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/v1"
+    os.environ["OPENAI_API_KEY"] = "direct"
+    os.environ["OPENAI_BASE_URL"] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/v1"
 
-        results = []
-        total_start = time.time()
+    results = []
+    total_start = time.time()
 
-        print(f"\nRunning {len(HYPOTHESES)} hypotheses\n")
-        print("=" * 70)
+    print(f"\nRunning {len(HYPOTHESES)} hypotheses\n")
+    print("=" * 70)
 
-        for i, hypothesis in enumerate(HYPOTHESES, 1):
-            print(f"\n[{i}/{len(HYPOTHESES)}] {hypothesis[:65]}...")
-            print("  Initializing POPPER agent...")
+    for i, hypothesis in enumerate(HYPOTHESES, 1):
+        print(f"\n[{i}/{len(HYPOTHESES)}] {hypothesis[:65]}...")
+        print("  Initializing POPPER agent...")
 
-            try:
-                agent = Popper(llm=LOCAL_MODEL, is_locally_served=True, server_port=LOCAL_PORT)
-                agent.register_data(data_path=DATA_DIR, loader_type="custom")
-                agent.configure(
-                    alpha=ALPHA,
-                    max_num_of_tests=MAX_TESTS,
-                    max_retry=MAX_RETRY,
-                    time_limit=TIME_LIMIT,
-                    aggregate_test="E-value",
-                    relevance_checker=True,
-                    use_react_agent=True,
-                )
-            except Exception as e:
-                print(f"  ERROR: Failed to initialize agent — {e}")
-                results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
-                                "status": "ERROR", "e_value": 0.0,
-                                "decision": "init_error", "time_min": 0.0})
-                continue
+        try:
+            agent = Popper(llm=LOCAL_MODEL, is_locally_served=True, server_port=LOCAL_PORT)
+            agent.register_data(data_path=DATA_DIR, loader_type="custom")
+            agent.configure(
+                alpha=ALPHA,
+                max_num_of_tests=MAX_TESTS,
+                max_retry=MAX_RETRY,
+                time_limit=TIME_LIMIT,
+                aggregate_test="E-value",
+                relevance_checker=True,
+                use_react_agent=True,
+            )
+        except Exception as e:
+            print(f"  ERROR: Failed to initialize agent — {e}")
+            results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
+                            "status": "ERROR", "e_value": 0.0,
+                            "decision": "init_error", "time_min": 0.0})
+            continue
 
-            start = time.time()
-            try:
-                result = agent.validate(hypothesis=hypothesis)
-                elapsed = (time.time() - start) / 60
-                e_value, decision = parse_result(result)
-                status = determine_status(e_value, decision)
+        start = time.time()
+        try:
+            result = agent.validate(hypothesis=hypothesis)
+            elapsed = (time.time() - start) / 60
+            e_value, decision = parse_result(result)
+            status = determine_status(e_value, decision)
 
-                print(f"  Status  : {status}")
-                print(f"  E-value : {e_value:.4f}")
-                print(f"  Decision: {decision}")
-                print(f"  Time    : {elapsed:.1f} min")
+            print(f"  Status  : {status}")
+            print(f"  E-value : {e_value:.4f}")
+            print(f"  Decision: {decision}")
+            print(f"  Time    : {elapsed:.1f} min")
 
-                results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
-                                "status": status, "e_value": e_value,
-                                "decision": decision, "time_min": elapsed})
+            results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
+                            "status": status, "e_value": e_value,
+                            "decision": decision, "time_min": elapsed})
 
-            except Exception as e:
-                elapsed = (time.time() - start) / 60
-                print(f"  ERROR: {str(e)[:120]}")
-                results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
-                                "status": "ERROR", "e_value": 0.0,
-                                "decision": "error", "time_min": elapsed})
+        except Exception as e:
+            elapsed = (time.time() - start) / 60
+            print(f"  ERROR: {str(e)[:120]}")
+            results.append({"model": LOCAL_MODEL, "hypothesis": hypothesis,
+                            "status": "ERROR", "e_value": 0.0,
+                            "decision": "error", "time_min": elapsed})
 
-        total_time = (time.time() - total_start) / 60
+    total_time = (time.time() - total_start) / 60
 
-        import pandas as pd
-        df = pd.DataFrame(results)
-        df.to_csv(results_file, index=False)
-        print(f"\nCSV saved to: {results_file}")
+    import pandas as pd
+    df = pd.DataFrame(results)
+    df.to_csv(results_file, index=False)
+    print(f"\nCSV saved to: {results_file}")
 
-        generate_report(results, total_time, results_file, LOCAL_MODEL)
+    generate_report(results, total_time, results_file, LOCAL_MODEL)
 
-        print("\n" + "=" * 70)
-        print("SUMMARY")
-        print("=" * 70)
-        for r in results:
-            print(f"{r['status']:15} | E={r['e_value']:7.4f} | {r['time_min']:5.1f}m | {r['hypothesis'][:40]}")
-        print("=" * 70)
-        print(f"Total time : {total_time:.1f} min ({total_time / 60:.2f} hours)")
-        print(f"Supported  : {sum(1 for r in results if r['status'] == 'SUPPORTED')}")
-        print(f"Not Supp.  : {sum(1 for r in results if r['status'] == 'NOT SUPPORTED')}")
-        print(f"Errors     : {sum(1 for r in results if r['status'] == 'ERROR')}")
-        print("=" * 70)
-
-    finally:
-        stop_vllm()
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    for r in results:
+        print(f"{r['status']:15} | E={r['e_value']:7.4f} | {r['time_min']:5.1f}m | {r['hypothesis'][:40]}")
+    print("=" * 70)
+    print(f"Total time : {total_time:.1f} min ({total_time / 60:.2f} hours)")
+    print(f"Supported  : {sum(1 for r in results if r['status'] == 'SUPPORTED')}")
+    print(f"Not Supp.  : {sum(1 for r in results if r['status'] == 'NOT SUPPORTED')}")
+    print(f"Errors     : {sum(1 for r in results if r['status'] == 'ERROR')}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
