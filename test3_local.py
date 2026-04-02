@@ -5,7 +5,6 @@ import socket
 import subprocess
 import sys
 import signal
-import shutil
 from datetime import datetime
 from popper import Popper
 from config import (
@@ -22,14 +21,9 @@ vllm_proc = None
 def start_vllm():
     global vllm_proc
 
-    vllm_bin = shutil.which("vllm")
-    if vllm_bin:
-        cmd = [vllm_bin, "serve", LOCAL_MODEL]
-    else:
-        cmd = [sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-               "--model", LOCAL_MODEL]
-
-    cmd += [
+    cmd = [
+        sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+        "--model", LOCAL_MODEL,
         "--port", str(LOCAL_PORT),
         "--host", LOCAL_HOST,
         "--dtype", "bfloat16",
