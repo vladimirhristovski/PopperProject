@@ -5,6 +5,13 @@ import socket
 import threading
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 from datetime import datetime
 from popper import Popper
 from config import (
@@ -115,7 +122,7 @@ class OpenAIHandler(BaseHTTPRequestHandler):
 def start_direct_server():
     load_model()
 
-    server = HTTPServer((LOCAL_HOST, LOCAL_PORT), OpenAIHandler)
+    server = ThreadedHTTPServer((LOCAL_HOST, LOCAL_PORT), OpenAIHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
 

@@ -10,7 +10,7 @@ LOCAL_HOST = "localhost"
 
 ALPHA = 0.1
 MAX_TESTS = 5
-TIME_LIMIT = 10
+TIME_LIMIT = 30
 MAX_RETRY = 3
 
 DATA_DIR = "data"
