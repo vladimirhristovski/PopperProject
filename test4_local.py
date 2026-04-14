@@ -6,12 +6,6 @@ import threading
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-
-
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-
-
 from datetime import datetime
 from popper import Popper
 from config import (
@@ -22,9 +16,13 @@ from config import (
 
 os.environ["HF_TOKEN"] = HF_TOKEN
 os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
-
 _model = None
 _tokenizer = None
+_inference_lock = threading.Lock()
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 
 
 def load_model():
@@ -76,26 +74,27 @@ class OpenAIHandler(BaseHTTPRequestHandler):
 
             import torch
 
-            text = _tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
-
-            with torch.no_grad():
-                outputs = _model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    temperature=max(temperature, 1e-6),
-                    do_sample=temperature > 0,
-                    pad_token_id=_tokenizer.eos_token_id,
+            with _inference_lock:
+                text = _tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
                 )
+                inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
 
-            response_text = _tokenizer.decode(
-                outputs[0][inputs["input_ids"].shape[1]:],
-                skip_special_tokens=True
-            )
+                with torch.no_grad():
+                    outputs = _model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        temperature=max(temperature, 1e-6),
+                        do_sample=temperature > 0,
+                        pad_token_id=_tokenizer.eos_token_id,
+                    )
+
+                response_text = _tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                )
 
             body = json.dumps({
                 "id": "chatcmpl-direct",
@@ -126,6 +125,7 @@ def start_direct_server():
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
 
+    print("Waiting for server to be ready...")
     for _ in range(30):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

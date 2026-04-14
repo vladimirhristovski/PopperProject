@@ -21,6 +21,11 @@ vllm_proc = None
 def start_vllm():
     global vllm_proc
 
+    env = os.environ.copy()
+    env["HF_TOKEN"] = HF_TOKEN
+    env["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
+    env.pop("PYTHONPATH", None)
+
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
         "--model", LOCAL_MODEL,
@@ -31,10 +36,6 @@ def start_vllm():
     ]
 
     print(f"Starting vLLM: {' '.join(cmd)}")
-
-    env = os.environ.copy()
-    env["HF_TOKEN"] = HF_TOKEN
-    env["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
 
     vllm_proc = subprocess.Popen(cmd, env=env)
 
