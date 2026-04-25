@@ -4,6 +4,7 @@ import time
 import socket
 import threading
 import json
+import queue
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from datetime import datetime
@@ -18,7 +19,7 @@ os.environ["HF_TOKEN"] = HF_TOKEN
 os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
 _model = None
 _tokenizer = None
-_inference_lock = threading.Lock()
+_req_queue = queue.Queue()
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -42,6 +43,45 @@ def load_model():
     print("Model loaded successfully!")
 
 
+def inference_worker():
+    import torch
+    print("Inference worker started.")
+    while True:
+        messages, max_tokens, temperature, resp_q = _req_queue.get()
+        try:
+            text = _tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
+
+            if inputs["input_ids"].shape[1] > 1800:
+                inputs["input_ids"] = inputs["input_ids"][:, -1800:]
+                if "attention_mask" in inputs:
+                    inputs["attention_mask"] = inputs["attention_mask"][:, -1800:]
+
+            with torch.no_grad():
+                outputs = _model.generate(
+                    **inputs,
+                    max_new_tokens=min(max_tokens, 512),
+                    temperature=max(temperature, 1e-6),
+                    do_sample=temperature > 0.01,
+                    pad_token_id=_tokenizer.eos_token_id,
+                    repetition_penalty=1.1,
+                )
+
+            response_text = _tokenizer.decode(
+                outputs[0][inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True
+            )
+            print(f"  [inference] generated {len(response_text)} chars")
+            resp_q.put(("ok", response_text))
+        except Exception as e:
+            print(f"  [inference] ERROR: {e}")
+            resp_q.put(("error", str(e)))
+
+
 class OpenAIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
@@ -53,11 +93,7 @@ class OpenAIHandler(BaseHTTPRequestHandler):
                 "object": "list",
                 "data": [{"id": LOCAL_MODEL, "object": "model"}]
             }).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_json(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -69,32 +105,18 @@ class OpenAIHandler(BaseHTTPRequestHandler):
             data = json.loads(raw)
 
             messages = data.get("messages", [])
-            max_tokens = data.get("max_tokens", 1024)
+            max_tokens = data.get("max_tokens", 512)
             temperature = data.get("temperature", 0.7)
 
-            import torch
+            resp_q = queue.Queue()
+            _req_queue.put((messages, max_tokens, temperature, resp_q))
 
-            with _inference_lock:
-                text = _tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-                inputs = _tokenizer(text, return_tensors="pt").to(_model.device)
+            status, content = resp_q.get()
 
-                with torch.no_grad():
-                    outputs = _model.generate(
-                        **inputs,
-                        max_new_tokens=max_tokens,
-                        temperature=max(temperature, 1e-6),
-                        do_sample=temperature > 0,
-                        pad_token_id=_tokenizer.eos_token_id,
-                    )
-
-                response_text = _tokenizer.decode(
-                    outputs[0][inputs["input_ids"].shape[1]:],
-                    skip_special_tokens=True
-                )
+            if status == "error":
+                self.send_response(500)
+                self.end_headers()
+                return
 
             body = json.dumps({
                 "id": "chatcmpl-direct",
@@ -102,28 +124,33 @@ class OpenAIHandler(BaseHTTPRequestHandler):
                 "model": LOCAL_MODEL,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": response_text},
+                    "message": {"role": "assistant", "content": content},
                     "finish_reason": "stop"
                 }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             }).encode()
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_json(body)
         else:
             self.send_response(404)
             self.end_headers()
+
+    def _send_json(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def start_direct_server():
     load_model()
 
+    worker = threading.Thread(target=inference_worker, daemon=True)
+    worker.start()
+
     server = ThreadedHTTPServer((LOCAL_HOST, LOCAL_PORT), OpenAIHandler)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+    srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    srv_thread.start()
 
     print("Waiting for server to be ready...")
     for _ in range(30):

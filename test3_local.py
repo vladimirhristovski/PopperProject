@@ -32,7 +32,9 @@ def start_vllm():
         "--port", str(LOCAL_PORT),
         "--host", LOCAL_HOST,
         "--dtype", "bfloat16",
-        "--max-model-len", "4096",
+        "--max-model-len", "2048",
+        "--quantization", "fp8",
+        "--enforce-eager",
     ]
 
     print(f"Starting vLLM: {' '.join(cmd)}")
