@@ -35,13 +35,14 @@ def start_vllm():
         "--max-model-len", "2048",
         "--quantization", "fp8",
         "--enforce-eager",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser", "llama3_json",
     ]
 
     print(f"Starting vLLM: {' '.join(cmd)}")
-
     vllm_proc = subprocess.Popen(cmd, env=env)
 
-    print("Waiting for vLLM to be ready (first run downloads model ~140GB)...")
+    print("Waiting for vLLM to be ready...")
     for _ in range(600):
         if vllm_proc.poll() is not None:
             print("ERROR: vLLM process exited unexpectedly. Check output above.")
