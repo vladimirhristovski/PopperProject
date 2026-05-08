@@ -37,7 +37,7 @@ def load_model():
     _tokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL)
     _model = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
         device_map="auto",
     )
     print("Model loaded successfully!")

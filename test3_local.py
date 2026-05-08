@@ -26,17 +26,49 @@ def start_vllm():
     env["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
     env.pop("PYTHONPATH", None)
 
+    import urllib.request
+    import subprocess as _sp
+    chat_template = "/tmp/tool_chat_template_llama3.1_json.jinja"
+    if not os.path.exists(chat_template):
+        url = "https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_llama3.1_json.jinja"
+        print("Downloading chat template from vLLM repo...")
+        urllib.request.urlretrieve(url, chat_template)
+        print(f"Chat template downloaded to {chat_template}")
+
+    try:
+        result = _sp.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10
+        )
+        vram_mb = int(result.stdout.strip().split("\n")[0].strip())
+        vram_gb = vram_mb / 1024
+        print(f"Detected GPU VRAM: {vram_gb:.1f} GB")
+    except Exception:
+        vram_gb = 40
+        print(f"Could not detect GPU VRAM, assuming {vram_gb}GB")
+
+    if vram_gb >= 70:
+        max_model_len = "4096"
+        gpu_util = "0.90"
+        print("80GB GPU detected — using max-model-len=4096")
+    else:  # 40GB A100
+        max_model_len = "3000"
+        gpu_util = "0.95"
+        print("40GB GPU detected — using max-model-len=3000")
+
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
         "--model", LOCAL_MODEL,
         "--port", str(LOCAL_PORT),
         "--host", LOCAL_HOST,
-        "--dtype", "bfloat16",
-        "--max-model-len", "2048",
-        "--quantization", "fp8",
+        "--dtype", "float16",
+        "--max-model-len", max_model_len,
+        "--gpu-memory-utilization", gpu_util,
+        "--quantization", "awq",
         "--enforce-eager",
         "--enable-auto-tool-choice",
         "--tool-call-parser", "llama3_json",
+        "--chat-template", chat_template,
     ]
 
     print(f"Starting vLLM: {' '.join(cmd)}")
