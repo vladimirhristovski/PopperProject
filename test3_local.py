@@ -51,7 +51,7 @@ def start_vllm():
         max_model_len = "4096"
         gpu_util = "0.90"
         print("80GB GPU detected — using max-model-len=4096")
-    else:  # 40GB A100
+    else:
         max_model_len = "3000"
         gpu_util = "0.95"
         print("40GB GPU detected — using max-model-len=3000")
@@ -67,7 +67,7 @@ def start_vllm():
         "--quantization", "awq",
         "--enforce-eager",
         "--enable-auto-tool-choice",
-        "--tool-call-parser", "llama3_json",
+        "--tool-call-parser", "hermes",
         "--chat-template", chat_template,
     ]
 
@@ -221,38 +221,38 @@ def generate_report(results, total_time, results_file, model_name):
     errors = sum(1 for r in results if r["status"] == "ERROR")
 
     def _cell_borders(cell):
-        tc = cell._tc;
+        tc = cell._tc
         tcPr = tc.get_or_add_tcPr()
         for edge in ("top", "left", "bottom", "right"):
             b = OxmlElement(f"w:{edge}")
-            b.set(qn("w:val"), "single");
-            b.set(qn("w:sz"), "4");
+            b.set(qn("w:val"), "single")
+            b.set(qn("w:sz"), "4")
             b.set(qn("w:color"), "CCCCCC")
             tcPr.append(b)
 
     def _header_cell(table, row, col, text):
-        cell = table.cell(row, col);
+        cell = table.cell(row, col)
         cell.text = text
-        run = cell.paragraphs[0].runs[0];
+        run = cell.paragraphs[0].runs[0]
         run.bold = True
-        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF);
+        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
         run.font.size = Pt(10)
-        tc = cell._tc;
+        tc = cell._tc
         tcPr = tc.get_or_add_tcPr()
-        shd = OxmlElement("w:shd");
-        shd.set(qn("w:fill"), "2E5090");
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), "2E5090")
         tcPr.append(shd)
         _cell_borders(cell)
 
     def _data_cell(table, row, col, text, bg="FFFFFF"):
-        cell = table.cell(row, col);
+        cell = table.cell(row, col)
         cell.text = str(text)
         cell.paragraphs[0].runs[0].font.size = Pt(9)
         if bg != "FFFFFF":
-            tc = cell._tc;
+            tc = cell._tc
             tcPr = tc.get_or_add_tcPr()
-            shd = OxmlElement("w:shd");
-            shd.set(qn("w:fill"), bg);
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:fill"), bg)
             tcPr.append(shd)
         _cell_borders(cell)
 
@@ -266,53 +266,53 @@ def generate_report(results, total_time, results_file, model_name):
     for attr in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
         setattr(section, attr, Cm(2.54))
 
-    t = doc.add_heading("POPPER Experiment Report", 0);
+    t = doc.add_heading("POPPER Experiment Report", 0)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta = doc.add_paragraph()
-    meta.add_run("Model: ").bold = True;
+    meta.add_run("Model: ").bold = True
     meta.add_run(f"{model_name}    ")
-    meta.add_run("Date: ").bold = True;
+    meta.add_run("Date: ").bold = True
     meta.add_run(f"{timestamp}    ")
-    meta.add_run("Total time: ").bold = True;
+    meta.add_run("Total time: ").bold = True
     meta.add_run(f"{total_time:.1f} min")
 
-    doc.add_paragraph();
+    doc.add_paragraph()
     doc.add_heading("Summary", level=1)
     s = doc.add_paragraph()
     for label, val in [("Supported: ", supported), ("Not Supported: ", not_supp),
                        ("Errors: ", errors), ("Total: ", len(results))]:
-        s.add_run(label).bold = True;
+        s.add_run(label).bold = True
         s.add_run(f"{val}   ")
 
-    doc.add_paragraph();
+    doc.add_paragraph()
     doc.add_heading("Results", level=1)
-    tbl = doc.add_table(rows=len(results) + 1, cols=5);
+    tbl = doc.add_table(rows=len(results) + 1, cols=5)
     tbl.style = "Table Grid"
     for i, hdr in enumerate(["Hypothesis", "Status", "E-value", "Decision", "Time"]):
         _header_cell(tbl, 0, i, hdr)
     for i, r in enumerate(results, 1):
         hyp = r["hypothesis"][:80] + ("…" if len(r["hypothesis"]) > 80 else "")
         bg = STATUS_COLORS.get(r["status"], "FFFFFF")
-        _data_cell(tbl, i, 0, hyp);
+        _data_cell(tbl, i, 0, hyp)
         _data_cell(tbl, i, 1, r["status"], bg)
         _data_cell(tbl, i, 2, f"{r['e_value']:.4f}" if r["e_value"] else "N/A")
-        _data_cell(tbl, i, 3, str(r["decision"])[:60]);
+        _data_cell(tbl, i, 3, str(r["decision"])[:60])
         _data_cell(tbl, i, 4, f"{r['time_min']:.1f} min")
 
-    doc.add_paragraph();
+    doc.add_paragraph()
     doc.add_heading("Configuration", level=1)
-    cfg_tbl = doc.add_table(rows=len(CONFIG_ROWS), cols=2);
+    cfg_tbl = doc.add_table(rows=len(CONFIG_ROWS), cols=2)
     cfg_tbl.style = "Table Grid"
     for idx, (key, val) in enumerate(CONFIG_ROWS):
-        k = cfg_tbl.cell(idx, 0);
-        k.text = key;
-        k.paragraphs[0].runs[0].bold = True;
+        k = cfg_tbl.cell(idx, 0)
+        k.text = key
+        k.paragraphs[0].runs[0].bold = True
         _cell_borders(k)
-        v = cfg_tbl.cell(idx, 1);
-        v.text = val;
+        v = cfg_tbl.cell(idx, 1)
+        v.text = val
         _cell_borders(v)
 
-    doc.add_paragraph();
+    doc.add_paragraph()
     doc.add_heading("Individual Test Details", level=1)
     for i, r in enumerate(results, 1):
         doc.add_heading(f"Test {i}", level=2)
@@ -320,9 +320,10 @@ def generate_report(results, total_time, results_file, model_name):
                            ("E-value", f"{r['e_value']:.6f}"), ("Decision", r["decision"]),
                            ("Time", f"{r['time_min']:.1f} min")]:
             doc.add_paragraph(f"{label:12}: {val}")
-        if i < len(results): doc.add_paragraph("─" * 50)
+        if i < len(results):
+            doc.add_paragraph("─" * 50)
 
-    doc.add_page_break();
+    doc.add_page_break()
     doc.add_heading("Final Summary", level=1)
     avg_e = sum(r["e_value"] for r in results) / len(results) if results else 0
     doc.add_paragraph().add_run(
@@ -330,8 +331,8 @@ def generate_report(results, total_time, results_file, model_name):
     doc.add_paragraph()
     for label, val in [("Total time : ", f"{total_time:.1f} min"), ("Supported  : ", str(supported)),
                        ("Not Supp.  : ", str(not_supp)), ("Errors     : ", str(errors))]:
-        p = doc.add_paragraph();
-        p.add_run(label).bold = True;
+        p = doc.add_paragraph()
+        p.add_run(label).bold = True
         p.add_run(val)
 
     doc.save(report_file)
