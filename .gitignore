@@ -1,9 +1,7 @@
 *.sif
-*.csv
 __pycache__/
 *.pyc
 .env
-*.docx
 testapi.py
 data/
 .idea/

@@ -2,7 +2,7 @@ ANTHROPIC_API_KEY = ""
 OPENAI_API_KEY = ""
 HF_TOKEN = ""
 
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-5"
 OPENAI_MODEL = "gpt-4o"
 LOCAL_MODEL = "casperhansen/llama-3.3-70b-instruct-awq"
 LOCAL_PORT = 8000

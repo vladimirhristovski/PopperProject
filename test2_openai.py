@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 from datetime import datetime
 from popper import Popper
 from config import (
@@ -14,6 +15,34 @@ def check_data():
     required = ["winobias.csv", "bbq.csv", "stereoset.csv"]
     missing = [f for f in required if not os.path.exists(os.path.join(DATA_DIR, f))]
     return missing
+
+
+def save_trace(result, index, hypothesis, model_name, trace_dir):
+    os.makedirs(trace_dir, exist_ok=True)
+    base = os.path.join(trace_dir, f"hypothesis_{index:02d}")
+
+    with open(base + ".txt", "w", encoding="utf-8") as f:
+        f.write(f"Model      : {model_name}\n")
+        f.write(f"Hypothesis : {hypothesis}\n")
+        f.write("=" * 70 + "\n\n")
+        if isinstance(result, dict):
+            parsed = result.get("parsed_result", {})
+            f.write("---- parsed_result ----\n")
+            f.write(json.dumps(parsed, indent=2, ensure_ascii=False, default=str) + "\n\n")
+            f.write("---- last_message ----\n")
+            f.write(str(result.get("last_message", "")) + "\n\n")
+            f.write("---- log ----\n")
+            f.write(str(result.get("log", "")) + "\n")
+        else:
+            f.write(str(result) + "\n")
+
+    try:
+        with open(base + ".json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False, default=str)
+    except Exception as e:
+        print(f"  Warning: could not JSON-dump trace for hypothesis {index}: {e}")
+
+    print(f"  Trace saved to: {base}.txt / .json")
 
 
 def parse_result(result):
@@ -278,10 +307,13 @@ def run(results_file="results_openai.csv"):
 
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
+    trace_dir = results_file.replace(".csv", "_traces")
+
     results = []
     total_start = time.time()
 
     print(f"\nRunning {len(HYPOTHESES)} hypotheses (agent reinitialised per hypothesis)\n")
+    print(f"Traces will be saved under: {trace_dir}/")
     print("=" * 70)
 
     for i, hypothesis in enumerate(HYPOTHESES, 1):
@@ -312,6 +344,11 @@ def run(results_file="results_openai.csv"):
             result = agent.validate(hypothesis=hypothesis)
             elapsed = (time.time() - start) / 60
 
+            try:
+                save_trace(result, i, hypothesis, OPENAI_MODEL, trace_dir)
+            except Exception as e:
+                print(f"  Warning: failed to save trace — {e}")
+
             e_value, decision = parse_result(result)
             status = determine_status(e_value, decision)
 
@@ -327,6 +364,10 @@ def run(results_file="results_openai.csv"):
         except Exception as e:
             elapsed = (time.time() - start) / 60
             print(f"  ERROR: {str(e)[:120]}")
+            try:
+                save_trace({"error": str(e)}, i, hypothesis, OPENAI_MODEL, trace_dir)
+            except Exception:
+                pass
             results.append({"model": OPENAI_MODEL, "hypothesis": hypothesis,
                             "status": "ERROR", "e_value": 0.0,
                             "decision": "error", "time_min": elapsed})

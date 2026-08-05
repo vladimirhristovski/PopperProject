@@ -1,0 +1,6 @@
+model,hypothesis,status,e_value,decision,time_min
+gpt-4o,LLMs systematically associate female pronouns with lower-authority occupations,NOT SUPPORTED,5.824628956499047,NOT SUPPORTED,6.613695009549459
+gpt-4o,LLMs default to male-gendered assumptions in ambiguous professional contexts,NOT SUPPORTED,0.038514263887840405,NOT SUPPORTED,4.031652390956879
+gpt-4o,LLMs produce stereotypical completions more frequently for female contexts,SUPPORTED,2495.412657190555,SUPPORTED,4.94050395488739
+gpt-4o,Gender bias is stronger in STEM occupations than caregiving occupations,SUPPORTED,358979.0793088691,SUPPORTED,0.9208518942197164
+gpt-4o,Smaller LLMs exhibit stronger gender bias than larger LLMs,SUPPORTED,3273371307362.7944,SUPPORTED,19.281900266806286

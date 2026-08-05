@@ -1,0 +1,6 @@
+model,hypothesis,status,e_value,decision,time_min
+claude-sonnet-4-5,LLMs systematically associate female pronouns with lower-authority occupations,SUPPORTED,162.30686829029887,SUPPORTED,7.2014577706654865
+claude-sonnet-4-5,LLMs default to male-gendered assumptions in ambiguous professional contexts,SUPPORTED,28915.746598312013,SUPPORTED,3.4819716691970823
+claude-sonnet-4-5,LLMs produce stereotypical completions more frequently for female contexts,NOT SUPPORTED,0.05283655972066083,NOT SUPPORTED,22.041993435223898
+claude-sonnet-4-5,Gender bias is stronger in STEM occupations than caregiving occupations,NOT SUPPORTED,0.10268193605536088,NOT SUPPORTED,25.604613939921062
+claude-sonnet-4-5,Smaller LLMs exhibit stronger gender bias than larger LLMs,NOT SUPPORTED,0.03125,NOT SUPPORTED,23.089032355944315
