@@ -22,10 +22,12 @@ from popper_common import (
 )
 
 
-def run(results_file="results_openai.csv"):
+def run(results_file="results/results_openai.csv"):
     print("=" * 70)
     print(f"POPPER — Test 2: OpenAI ({OPENAI_MODEL})")
     print("=" * 70)
+
+    os.makedirs(os.path.dirname(results_file) or ".", exist_ok=True)
 
     missing = check_data()
     if missing:

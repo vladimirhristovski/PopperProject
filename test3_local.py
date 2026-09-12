@@ -208,10 +208,12 @@ signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
 
-def run(results_file="results_local.csv"):
+def run(results_file="results/results_local.csv"):
     print("=" * 70)
     print(f"POPPER — Test 3 vLLM: ({LOCAL_MODEL})")
     print("=" * 70)
+
+    os.makedirs(os.path.dirname(results_file) or ".", exist_ok=True)
 
     missing = check_data()
     if missing:

@@ -5,3 +5,5 @@ __pycache__/
 testapi.py
 data/
 .idea/
+.venv/
+.ruff_cache/
