@@ -3,11 +3,11 @@ From: nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
 
 %labels
     Author      POPPER Gender Bias Experiment
-    Version     1.0
-    Description vLLM + POPPER + Llama 3.1 70B on A100
+    Version     1.1
+    Description vLLM + POPPER + Llama 3.1 70B on A100 (pinned build, see requirements.txt)
 
 %post
-    # ── System packages ───────────────────────────────────────────────────────
+    # System packages
     apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3 \
@@ -20,50 +20,51 @@ From: nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
         ca-certificates
     rm -rf /var/lib/apt/lists/*
 
-    # ── Upgrade pip ───────────────────────────────────────────────────────────
     pip3 install --upgrade pip
 
-    # ── PyTorch (CUDA 12.1) ───────────────────────────────────────────────────
-    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    # torch pinned to vLLM 0.7.3's exact required, cu121-available versions
+    pip3 install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
-    # ── vLLM ─────────────────────────────────────────────────────────────────
-    pip3 install vllm
+    # vllm 0.7.3 pinned for openai/pydantic compatibility with POPPER's pins below
+    pip3 install vllm==0.7.3
 
-    # ── Hugging Face (for model download) ────────────────────────────────────
-    pip3 install huggingface_hub transformers accelerate
+    pip3 install huggingface_hub[hf_xet]==0.30.0 transformers==4.51.3 accelerate==1.5.2
 
-    # ── POPPER (installed from GitHub — not on PyPI) ─────────────────────────
-    pip3 install git+https://github.com/snap-stanford/POPPER.git
-    pip3 install openai anthropic
+    # --no-deps so pip doesn't re-resolve and drift the pins below
+    # (gradio dropped: only used by launch_UI(), never called here, and it forces huggingface_hub past what transformers needs)
+    pip3 install --no-deps git+https://github.com/snap-stanford/POPPER.git
+    pip3 install \
+        pydantic==2.9.2 \
+        openai==1.61.0 \
+        anthropic==0.40.0 \
+        langchain_core==0.3.22 \
+        langchain_openai==0.2.11 \
+        langchain_anthropic==0.2.3 \
+        langchain==0.3.7 \
+        langgraph==0.2.39 \
+        langchain_experimental==0.3.3 \
+        numpy==1.26.4 \
+        scipy==1.13.1 \
+        scikit-learn tqdm pandas ipython
 
-    # ── Experiment dependencies ───────────────────────────────────────────────
-    pip3 install pandas python-docx scipy numpy
+    pip3 install python-docx
 
-    # ── Clean up ──────────────────────────────────────────────────────────────
     pip3 cache purge
 
 %environment
-    # CUDA
     export CUDA_HOME=/usr/local/cuda
     export PATH=$CUDA_HOME/bin:$PATH
     export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 
-    # Python encoding
     export LANG=C.UTF-8
     export LC_ALL=C.UTF-8
 
-    # Hugging Face — token for gated models (Llama 3.1 70B requires this)
-    # Set on the host before running: export HF_TOKEN="hf_your_token_here"
-    # Singularity inherits host env vars automatically, so this just ensures
-    # the legacy name is also set in case some tools look for it
+    # Set HF_TOKEN on the host before running for gated models
     export HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-""}
 
-    # Hugging Face cache — points to a writable location on the host
-    # Override at runtime with: --env HF_HOME=/your/path
     export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
     export TRANSFORMERS_CACHE=${HF_HOME}/transformers
 
-    # vLLM
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 %runscript

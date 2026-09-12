@@ -1,8 +1,10 @@
+import json
 import os
+
 import pandas as pd
 import requests
-import json
 from datasets import load_dataset
+
 from config import DATA_DIR
 
 
