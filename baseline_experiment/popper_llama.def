@@ -43,6 +43,8 @@ From: nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
         langchain==0.3.7 \
         langgraph==0.2.39 \
         langchain_experimental==0.3.3 \
+        chromadb \
+        sentence-transformers==3.3.1 \
         numpy==1.26.4 \
         scipy==1.13.1 \
         scikit-learn tqdm pandas ipython

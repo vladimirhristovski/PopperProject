@@ -21,6 +21,8 @@ langchain_anthropic==0.2.3
 langchain==0.3.7
 langgraph==0.2.39
 langchain_experimental==0.3.3
+chromadb
+sentence-transformers==3.3.1
 numpy==1.26.4
 scipy==1.13.1
 scikit-learn
