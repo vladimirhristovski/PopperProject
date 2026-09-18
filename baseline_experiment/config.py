@@ -13,7 +13,9 @@ MAX_TESTS = 5
 TIME_LIMIT = 60
 MAX_RETRY = 3
 
-DATA_DIR = "data"
+from pathlib import Path
+
+DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
 
 HYPOTHESES = [
     "LLMs systematically associate female pronouns with lower-authority occupations",
