@@ -6,9 +6,19 @@ class ReviewGate:
 
     def go(self, main_hypothesis, test_results=None, log=None):
         proposal = None
+        last_error = None
         for _ in range(self._max_attempts):
-            proposal = self._real.go(main_hypothesis, test_results, log)
-            approved, reasoning = self._reviewer.review(main_hypothesis, proposal, test_results)
+            try:
+                proposal = self._real.go(main_hypothesis, test_results, log)
+            except Exception as e:
+                last_error = e
+                if log is not None:
+                    log.setdefault("reviewer", []).append(f"Proposal generation failed: {e}")
+                continue
+            try:
+                approved, reasoning = self._reviewer.review(main_hypothesis, proposal, test_results)
+            except Exception as e:
+                approved, reasoning = False, f"Reviewer call failed: {e}"
             if log is not None:
                 log.setdefault("reviewer", []).append(
                     "Reviewer verdict: {verdict}\nReasoning: {reasoning}\nProposal:\n{proposal}".format(
@@ -20,6 +30,8 @@ class ReviewGate:
             if approved:
                 return proposal
             self._real.add_to_failed_tests(proposal)
+        if proposal is None and last_error is not None:
+            raise last_error
         return proposal
 
     def add_to_existing_tests(self, test):

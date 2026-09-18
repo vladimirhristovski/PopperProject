@@ -58,7 +58,7 @@ def test_review_defaults_test_results_text_when_none(monkeypatch):
     _patch_reviewer_dependencies(monkeypatch, model)
 
     reviewer = Reviewer(llm="claude-sonnet-4-5")
-    approved, reasoning = reviewer.review("main hypothesis", "proposed test")
+    approved, _ = reviewer.review("main hypothesis", "proposed test")
 
     assert approved is False
     assert "None yet." in model.chain.calls[0]["input"]

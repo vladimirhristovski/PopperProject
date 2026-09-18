@@ -1,6 +1,7 @@
 from popper import Popper
 
-import popper_upgrade.config as config
+from popper_upgrade import config
+from popper_upgrade.llm import ensure_local_llm_api_key
 from popper_upgrade.reviewer.gate import ReviewGate
 from popper_upgrade.skills.proposal_agent import SkillAugmentedProposalAgent
 from popper_upgrade.trajectory import Trajectory
@@ -16,6 +17,7 @@ class PopperRunner:
         max_review_attempts=3,
         **popper_kwargs
     ):
+        ensure_local_llm_api_key(popper_kwargs.get("server_port"), popper_kwargs.get("api_key", "EMPTY"))
         self._popper = Popper(**popper_kwargs)
         self._skills_enabled = config.SKILLS_ENABLED if skills_enabled is None else skills_enabled
         self._skill_store = skill_store
@@ -27,8 +29,8 @@ class PopperRunner:
     def agent(self):
         return self._popper.agent
 
-    def register_data(self, loader_type, data_path, **kwargs):
-        self._popper.register_data(loader_type, data_path, **kwargs)
+    def register_data(self, data_path, loader_type="bio", **kwargs):
+        self._popper.register_data(data_path=data_path, loader_type=loader_type, **kwargs)
 
     def configure(self, **kwargs):
         self._popper.configure(**kwargs)

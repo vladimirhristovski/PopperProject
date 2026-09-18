@@ -1,15 +1,15 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 
 @dataclass
 class Trajectory:
-    log: Dict[str, List[str]]
-    tracked_tests: List[str]
-    tracked_stat: List[float]
+    log: dict[str, list[str]]
+    tracked_tests: list[str]
+    tracked_stat: list[float]
     res: bool
     res_stat: float
-    parsed_result: Dict[str, Any]
+    parsed_result: dict[str, Any]
     last_message: str
 
     @classmethod

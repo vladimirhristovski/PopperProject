@@ -27,8 +27,8 @@ class _FakePopper:
         self.configure_calls = []
         self.validate_calls = []
 
-    def register_data(self, loader_type, data_path, **kwargs):
-        self.register_data_calls.append((loader_type, data_path, kwargs))
+    def register_data(self, data_path, loader_type="bio", **kwargs):
+        self.register_data_calls.append((data_path, loader_type, kwargs))
 
     def configure(self, **kwargs):
         self.configure_calls.append(kwargs)
@@ -50,10 +50,10 @@ def test_register_data_and_configure_delegate(monkeypatch):
     monkeypatch.setattr(runner_module, "Popper", _FakePopper)
     runner = PopperRunner(llm="claude-sonnet-4-5")
 
-    runner.register_data("custom", "data/", extra=1)
+    runner.register_data("data/", loader_type="custom", extra=1)
     runner.configure(plot_agent_architecture=False)
 
-    assert runner._popper.register_data_calls == [("custom", "data/", {"extra": 1})]
+    assert runner._popper.register_data_calls == [("data/", "custom", {"extra": 1})]
     assert runner._popper.configure_calls == [{"plot_agent_architecture": False}]
 
 

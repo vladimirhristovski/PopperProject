@@ -38,10 +38,11 @@ class SkillStore:
         return True
 
     def retrieve(self, query: str, k: int = 3):
-        if self._collection.count() == 0:
+        count = self._collection.count()
+        if count == 0:
             return []
         embedding = self._embed(query)
-        results = self._collection.query(query_embeddings=[embedding], n_results=min(k, self._collection.count()))
+        results = self._collection.query(query_embeddings=[embedding], n_results=min(k, count))
         return [Skill(**metadata) for metadata in results["metadatas"][0]]
 
     def record_outcome(self, skill_id: str, passed: bool):

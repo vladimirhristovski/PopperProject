@@ -2,9 +2,7 @@ def _format_skills_block(skills):
     entries = []
     for skill in skills:
         entries.append(
-            "Applicability: {applicability}\nSuggested test: {design_template}".format(
-                applicability=skill.applicability, design_template=skill.design_template
-            )
+            f"Applicability: {skill.applicability}\nSuggested test: {skill.design_template}"
         )
     return (
         "Suggested strategies from prior experiments (not run in this session — "
