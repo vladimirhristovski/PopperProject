@@ -1,0 +1,20 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip \
+    && pip install --no-deps git+https://github.com/snap-stanford/POPPER.git
+
+COPY popper_upgrade/requirements.txt /tmp/popper-requirements.txt
+RUN pip install -r /tmp/popper-requirements.txt
+
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install -r /tmp/requirements-dev.txt
+
+COPY popper_upgrade/ /app/popper_upgrade/
+
+CMD ["python", "-m", "pytest", "popper_upgrade/tests/", "-v"]

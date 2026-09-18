@@ -1,0 +1,10 @@
+.git/
+.venv/
+.idea/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+data/
+baseline_experiment/results/
+*.sif
