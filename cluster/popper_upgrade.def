@@ -1,0 +1,40 @@
+Bootstrap: localimage
+From: popper_llama.sif
+
+%labels
+    Description popper_llama.sif plus popper_upgrade (snapshot reader, bundle writer, embeddings, job runner)
+
+%files
+    popper_upgrade /opt/popper/popper_upgrade
+    cluster /opt/popper/cluster
+    baseline_experiment/config.py /opt/popper/baseline_experiment/config.py
+    baseline_experiment/popper_common.py /opt/popper/baseline_experiment/popper_common.py
+    data/winobias.csv /opt/popper/data/winobias.csv
+    data/bbq.csv /opt/popper/data/bbq.csv
+    data/stereoset.csv /opt/popper/data/stereoset.csv
+
+%post
+    rm -rf /opt/popper/popper_upgrade/app
+    mkdir -p /opt/popper/data/bio_database
+    pip3 freeze > /tmp/base.txt
+    pip3 install sentence-transformers==3.3.1 -c /tmp/base.txt
+    export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
+    python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+    pip3 cache purge
+    chmod -R a+rX /opt/popper
+
+%environment
+    export PYTHONPATH=/opt/popper:${PYTHONPATH:-}
+    export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
+    export HF_HOME=${POPPER_HF_HOME:-$PWD/hf_cache}
+    export TRANSFORMERS_CACHE=${HF_HOME}/transformers
+
+%runscript
+    exec python3 -m cluster.job run "$@"
+
+%test
+    python3 -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+    python3 -c "import vllm; print('vLLM: OK')"
+    python3 -c "import popper; print('POPPER: OK')"
+    python3 -c "import pandas, docx; print('pandas + python-docx: OK')"
+    python3 -c "import popper_upgrade, sentence_transformers, cluster.job"

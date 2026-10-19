@@ -4,10 +4,13 @@ from pydantic import BaseModel, Field
 
 from popper_upgrade.llm import ensure_local_llm_api_key
 
-REVIEWER_SYSTEM_PROMPT = """You are a rigorous scientific reviewer evaluating a proposed falsification test's design, before it is executed. You never see any test result or p-value, and your verdict must never be based on one.
+REVIEWER_SYSTEM_PROMPT = """You are a rigorous scientific reviewer evaluating a proposed falsification test's design, \
+before it is executed. \
+You never see any test result or p-value, and your verdict must never be based on one.
 
 Judge the proposal strictly on these four criteria:
-1. Relevance: if the main hypothesis were false, would this sub-test also be false? Is it a genuine implication of the main hypothesis?
+1. Relevance: if the main hypothesis were false, would this sub-test also be false? \
+Is it a genuine implication of the main hypothesis?
 2. Statistical validity: is this an answerable, well-specified test given the described data?
 3. Redundancy: does it duplicate a test already listed as run or attempted?
 4. Confounding risk: could the proposed test's outcome be explained by something other than the main hypothesis?
@@ -27,12 +30,12 @@ class Reviewer:
         prompt = ChatPromptTemplate.from_messages([("system", REVIEWER_SYSTEM_PROMPT), ("human", "{input}")])
         self._chain = prompt | model.with_structured_output(ReviewVerdict)
 
-    def review(self, main_hypothesis, proposal, test_results=None):
-        test_results_text = test_results if test_results else "None yet."
+    def review(self, main_hypothesis, proposal, prior_designs):
+        prior_text = "\n".join(f"- {d}" for d in prior_designs) if prior_designs else "None yet."
         input_text = (
             f"Main hypothesis: {main_hypothesis}\n\n"
             f"Proposed falsification test:\n{proposal}\n\n"
-            f"Tests already run or attempted:\n{test_results_text}"
+            f"Designs already proposed in this session:\n{prior_text}"
         )
         result = self._chain.invoke({"input": input_text})
         return result.approved, result.reasoning

@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import dataclass
 
 
@@ -9,6 +10,24 @@ class Skill:
     preconditions: str
     domain: str
     source_hypothesis: str
-    times_used: int
-    times_passed: int
-    created_at: str
+    source_run_id: str | None = None
+    parent_skill_id: str | None = None
+    approved: bool | None = None
+    decided_by: str | None = None
+    decision_reason: str | None = None
+    times_used: int = 0
+    times_passed: int = 0
+    created_at: str = ""
+
+    @property
+    def content_hash(self):
+        text = self.applicability + "\n" + self.design_template + "\n" + self.preconditions
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class DecisionExample:
+    skill: Skill
+    verdict: str
+    reason: str
+    decider: str

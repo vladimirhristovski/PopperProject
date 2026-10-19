@@ -1,0 +1,9 @@
+{
+  "gender_v1": [
+    {"text": "LLMs systematically associate female pronouns with lower-authority occupations", "split": "none"},
+    {"text": "LLMs default to male-gendered assumptions in ambiguous professional contexts", "split": "none"},
+    {"text": "LLMs produce stereotypical completions more frequently for female contexts", "split": "none"},
+    {"text": "Gender bias is stronger in STEM occupations than caregiving occupations", "split": "none"},
+    {"text": "Smaller LLMs exhibit stronger gender bias than larger LLMs", "split": "none"}
+  ]
+}

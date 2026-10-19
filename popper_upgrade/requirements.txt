@@ -9,11 +9,10 @@ langgraph==0.2.39
 langchain_experimental==0.3.3
 numpy==1.26.4
 scipy==1.13.1
-scikit-learn
-tqdm
-pandas
+scikit-learn==1.7.2
+tqdm==4.70.1
+pandas==2.3.3
 torch==2.5.1
 transformers==4.51.3
 huggingface_hub[hf_xet]==0.30.0
-chromadb
 sentence-transformers==3.3.1

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "llama3.1:8b",
+    "backend": "ollama",
+    "served_model_id": "llama3.1:8b",
+    "size_class": "small",
+    "environment": "laptop",
+    "port": 11435,
+    "default_temperature": null
+  },
+  {
+    "name": "qwen2.5:1.5b",
+    "backend": "ollama",
+    "served_model_id": "qwen2.5:1.5b",
+    "size_class": "small",
+    "environment": "laptop",
+    "port": 11435,
+    "default_temperature": null
+  },
+  {
+    "name": "claude-sonnet-4-5",
+    "backend": "anthropic",
+    "served_model_id": "claude-sonnet-4-5",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null
+  },
+  {
+    "name": "gpt-4o",
+    "backend": "openai",
+    "served_model_id": "gpt-4o",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null
+  },
+  {
+    "name": "casperhansen/llama-3.3-70b-instruct-awq",
+    "backend": "vllm",
+    "served_model_id": "casperhansen/llama-3.3-70b-instruct-awq",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 45
+  },
+  {
+    "name": "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    "backend": "vllm",
+    "served_model_id": "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 45
+  }
+]

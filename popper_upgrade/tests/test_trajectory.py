@@ -30,7 +30,7 @@ def test_from_popper_reads_agent_state_directly():
 
     trajectory = Trajectory.from_popper(popper_instance, validate_result)
 
-    assert trajectory.log is popper_instance.agent.log
+    assert trajectory.log == popper_instance.agent.log
     assert trajectory.tracked_tests == ["test A"]
     assert trajectory.tracked_stat == [0.01]
     assert trajectory.res is True
@@ -49,3 +49,27 @@ def test_from_popper_does_not_recompute_the_decision():
 
     assert trajectory.res is False
     assert trajectory.res_stat == 0.3
+
+
+def test_trajectory_is_detached_from_agent():
+    popper_instance = _FakePopper()
+    traj = Trajectory.from_popper(popper_instance, {"parsed_result": {}, "last_message": ""})
+
+    popper_instance.agent.tracked_stat.append(0.5)
+    popper_instance.agent.tracked_tests.append("test B")
+    popper_instance.agent.log["designer"].append("x")
+
+    assert traj.tracked_stat == [0.01]
+    assert traj.tracked_tests == ["test A"]
+    assert traj.log["designer"] == ["proposed test A"]
+
+
+def test_trajectory_dict_round_trip():
+    traj = Trajectory.from_popper(
+        _FakePopper(), {"parsed_result": {"conclusion": True}, "last_message": "done"}
+    )
+
+    restored = Trajectory.from_dict(traj.to_dict())
+
+    assert restored == traj
+    assert restored.log is not traj.log

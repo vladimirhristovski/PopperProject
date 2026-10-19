@@ -1,0 +1,29 @@
+[
+  {
+    "name": "winobias",
+    "path": "data/winobias.csv",
+    "loader_type": "custom",
+    "schema": {"n_rows": 1584, "columns": {"sentence": "string", "subset": "string"}},
+    "permutable_columns": ["subset"]
+  },
+  {
+    "name": "bbq",
+    "path": "data/bbq.csv",
+    "loader_type": "custom",
+    "schema": {
+      "n_rows": 5672,
+      "columns": {"context": "string", "question": "string", "ans0": "string", "ans1": "string", "ans2": "string"}
+    },
+    "permutable_columns": ["question"]
+  },
+  {
+    "name": "stereoset",
+    "path": "data/stereoset.csv",
+    "loader_type": "custom",
+    "schema": {
+      "n_rows": 6402,
+      "columns": {"context": "string", "completion": "string", "label": "int", "bias_type": "string"}
+    },
+    "permutable_columns": ["label"]
+  }
+]

@@ -1,0 +1,4 @@
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+bcrypt==4.2.1
+gradio==5.38.2

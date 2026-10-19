@@ -1,0 +1,21 @@
+{
+  "name": "gender_permutation_v1",
+  "models": [
+    "qwen2.5:1.5b",
+    "llama3.1:8b",
+    "casperhansen/llama-3.3-70b-instruct-awq",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ"
+  ],
+  "arms": ["baseline", "skills", "skills_reviewer", "random_skills", "wrong_domain_skills"],
+  "source": {"kind": "gender_custom", "hypothesis_set": "gender_v1", "task": "gender_bias", "domain": "social science"},
+  "train_tasks": [],
+  "test_tasks": ["gender_bias"],
+  "replicates": 20,
+  "permutation_seeds": [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120],
+  "popper": {"alpha": 0.1, "max_num_of_tests": 5, "max_retry": 3, "time_limit": 60},
+  "prompt_versions": {
+    "curator": "71f1da4229345c516c897216030065483a57d3b2ca7447e03cc8d9b41db389ff",
+    "reviewer": "becb1a88b418811c5b915a86aee9ba15213a8635021277c70190e6b0d4c9e0dd",
+    "extractor": "a5aec4d4cda3ecdd968cdef65a40fe0f8690a5af834ea7beeab21714ec66f3cf"
+  }
+}

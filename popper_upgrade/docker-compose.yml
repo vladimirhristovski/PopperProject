@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: popper
+      POSTGRES_PASSWORD: popper
+      POSTGRES_DB: popper
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - popper_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U popper -d popper"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: popper_upgrade/Dockerfile.app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:7860:7860"
+    environment:
+      POPPER_DB_DSN: postgresql://popper:popper@postgres:5432/popper
+      POPPER_APP_HOST: 0.0.0.0
+      POPPER_OLLAMA_UPSTREAM: http://host.docker.internal:11434
+      POPPER_TRAJECTORY_DIR: /var/popper/trajectories
+      POPPER_DATA_DIR: /var/popper/data
+      POPPER_CURATOR_MODEL:
+      ANTHROPIC_API_KEY:
+      OPENAI_API_KEY:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - popper_trajectories:/var/popper/trajectories
+      - ../data:/var/popper/data
+
+volumes:
+  popper_pgdata:
+  popper_trajectories:
