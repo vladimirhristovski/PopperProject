@@ -413,3 +413,53 @@ def test_library_from_skips_learning_and_evaluates_with_the_supplied_library(job
     assert not {row["hypothesis"] for row in runs} & set(TRAIN)
     assert "freeze.json" not in tarfile.open(archive).getnames()
     assert json.loads(_read(archive, "manifest.json"))["frozen_snapshot_id"] == "shared-library"
+
+
+def test_serving_failure_packs_a_diagnostics_archive_and_names_the_logs(job_env, monkeypatch, capsys):
+    job_env.workdir.mkdir(parents=True)
+    (job_env.workdir / "vllm.log").write_text("INFO starting\nRuntimeError: triton failed to compile\n")
+    (job_env.workdir / "proxy.log").write_text("[proxy] POST failed\n")
+    (job_env.workdir / "preflight.json").write_text('{"ok": true}')
+    monkeypatch.setattr(job_module, "run_experiment_job", lambda *args, **kwargs: 1)
+
+    assert _run(job_env) == 1
+
+    archives = list(job_env.workdir.glob("popper_diagnostics_demo_*.tar.gz"))
+    assert len(archives) == 1
+    assert list(job_env.workdir.glob("popper_results_*")) == []
+    out = capsys.readouterr().out.splitlines()
+    assert "no results" in out[0]
+    assert str(job_env.workdir.resolve() / "vllm.log") in out[1]
+    assert str(job_env.workdir.resolve() / "proxy.log") in out[1]
+    assert out[-1].startswith("Please send this file to Vladimir:")
+    assert archives[0].name in out[-1]
+    with tarfile.open(archives[0]) as tar:
+        names = {name.split("/", 1)[1] for name in tar.getnames() if "/" in name}
+    assert names == {"manifest.json", "vllm.log", "proxy.log", "preflight.json"}
+    manifest = json.loads(_read(archives[0], "manifest.json"))
+    assert manifest["diagnostics_only"] is True
+    assert manifest["n_runs"] == 0
+    assert "triton failed" in manifest["last_vllm_log_error"]
+
+
+def test_diagnostics_archive_is_made_without_any_logs(job_env, monkeypatch, capsys):
+    monkeypatch.setattr(job_module, "run_experiment_job", lambda *args, **kwargs: 1)
+
+    assert _run(job_env) == 1
+
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 2
+    assert len(list(job_env.workdir.glob("popper_diagnostics_demo_*.tar.gz"))) == 1
+
+
+def test_skipped_preflight_still_downloads_the_model_first(job_env, monkeypatch, capsys):
+    def refuse(job, say=print):
+        return "cannot reach Hugging Face"
+
+    monkeypatch.setattr(job_module.preflight_module, "prefetch_model", refuse)
+
+    assert _run(job_env) == 1
+
+    assert "cannot reach Hugging Face" in capsys.readouterr().out
+    assert job_env.popper.validations == []
+    assert list(job_env.workdir.glob("popper_*.tar.gz")) == []

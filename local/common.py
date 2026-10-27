@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from popper_upgrade.models import ServingError
+from popper_upgrade.models import HOSTED_BACKENDS, PROXIED_BACKENDS, ServingError
 
 SPECS_DIR = Path(__file__).resolve().parent.parent / "popper_upgrade" / "eval" / "specs"
 SPEC_PATH = SPECS_DIR / "discoverybench_v1.json"
@@ -26,6 +26,7 @@ def build_parser(prog, models, spec=SPEC_PATH, library_required=False):
     parser.add_argument("--replicates", type=int)
     parser.add_argument("--examples-per-task", type=int)
     parser.add_argument("--report-dir")
+    parser.add_argument("--allow-unpriced", action="store_true")
     return parser
 
 
@@ -34,6 +35,15 @@ def missing_key(provider):
     if os.environ.get(name):
         return None
     return f"error: environment variable {name} is not set; set it and run again. Nothing was run."
+
+
+def unpriced_refusal(model):
+    if model["backend"] not in HOSTED_BACKENDS + PROXIED_BACKENDS or model.get("pricing"):
+        return None
+    return (
+        f"error: model {model['name']} has no pricing, so its spend cannot be capped. "
+        "Add pricing to the registry or pass --allow-unpriced to run without a budget limit. Nothing was run."
+    )
 
 
 def load_library(path, embedder):
@@ -71,6 +81,16 @@ def run_paid(provider, args):
     try:
         model = RegistryRepository(conn).model(args.model)
         check_environment(model, ENVIRONMENT)
+        problem = unpriced_refusal(model)
+        if problem is not None and not args.allow_unpriced:
+            print(problem, file=sys.stderr)
+            return 2
+        if problem is not None:
+            print(
+                f"WARNING: running {model['name']} with no budget limit because --allow-unpriced was passed; "
+                "its spend is not tracked or capped.",
+                file=sys.stderr,
+            )
         print(format_status(check_model_status(model)))
         embedder = Embedder()
         library = load_library(args.library_from, embedder)

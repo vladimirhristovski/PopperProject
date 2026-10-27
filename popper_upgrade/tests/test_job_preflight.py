@@ -33,6 +33,8 @@ def healthy(monkeypatch, tmp_path):
     monkeypatch.setattr(popper_common, "check_data", lambda: [])
     monkeypatch.setattr(preflight, "Embedder", FakeEmbedder)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.delenv("POPPER_FAKE_BACKEND", raising=False)
+    monkeypatch.setattr(preflight.fetch, "download_model", lambda model_id, revision=None, say=print: Path("x"))
     return job
 
 
@@ -82,6 +84,7 @@ def test_all_checks_pass(healthy, answering, tmp_path):
         "disk",
         "data",
         "snapshot",
+        "download",
         "model_answers",
     ]
     assert _check(result, "gpu")["detail"] == "Test GPU, 80 GB"
@@ -353,3 +356,39 @@ def test_ungated_model_needs_no_token(tmp_path):
 
 def job_model(job):
     return preflight.model_row(job)["served_model_id"].replace("/", "--")
+
+
+def test_download_check_fetches_the_job_model_before_the_server_starts(healthy, answering, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        preflight.fetch, "download_model", lambda model_id, revision=None, say=print: calls.append(model_id)
+    )
+
+    result = preflight.run_preflight(healthy, tmp_path / "out")
+
+    assert _check(result, "download")["ok"]
+    assert calls == [preflight.model_row(healthy)["served_model_id"]]
+    assert [check["name"] for check in result["checks"]].index("download") < [
+        check["name"] for check in result["checks"]
+    ].index("model_answers")
+
+
+def test_download_failure_is_reported_and_the_server_is_not_started(healthy, answering, monkeypatch, tmp_path):
+    def refuse(model_id, revision=None, say=print):
+        raise preflight.fetch.DownloadError("cannot reach Hugging Face at https://huggingface.co (URLError)")
+
+    monkeypatch.setattr(preflight.fetch, "download_model", refuse)
+
+    result = preflight.run_preflight(healthy, tmp_path / "out")
+
+    assert not result["ok"]
+    assert "cannot reach Hugging Face" in _check(result, "download")["detail"]
+    assert _check(result, "model_answers")["detail"].startswith("not tried")
+    assert answering == []
+
+
+def test_download_check_is_skipped_for_the_fake_backend(healthy, monkeypatch):
+    monkeypatch.setenv("POPPER_FAKE_BACKEND", "1")
+    monkeypatch.setattr(preflight.fetch, "download_model", lambda *a, **k: pytest.fail("must not download"))
+
+    assert preflight.check_download(healthy)["ok"]

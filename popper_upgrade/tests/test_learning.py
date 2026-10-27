@@ -127,3 +127,26 @@ def test_bundle_learning_exposes_source_sink_and_freeze(tmp_path):
     assert learning.source is library
     assert isinstance(learning.sink, LearningSink)
     assert learning.freeze().snapshot_id
+
+
+def test_db_freeze_is_taken_once_per_learning_experiment(tmp_path, monkeypatch):
+    import popper_upgrade.db.snapshot as snapshot_module
+    from popper_upgrade.eval.learning import db_learning
+
+    embedder = FakeEmbedder()
+    exports = []
+
+    def export(conn, path):
+        exports.append(path)
+        write_snapshot(path, [], embedder, snapshot_id=f"snap-{len(exports)}")
+
+    monkeypatch.setattr(snapshot_module, "export_snapshot", export)
+    monkeypatch.setattr("popper_upgrade.db.skills_repo.SkillRepository", lambda conn, emb: object())
+    learning = db_learning(object(), embedder, object(), tmp_path / "snapshots")
+
+    first = learning.freeze("learn-1")
+    again = learning.freeze("learn-1")
+    other = learning.freeze("learn-2")
+
+    assert (first.snapshot_id, again.snapshot_id, other.snapshot_id) == ("snap-1", "snap-1", "snap-2")
+    assert len(exports) == 2

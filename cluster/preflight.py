@@ -5,7 +5,9 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+from cluster import fetch
 from cluster.common import LOCAL_HOST, load_baseline
+from cluster.fetch import hf_home
 from popper_upgrade.models import check_environment, serving_for
 from popper_upgrade.serving.vllm import DEFAULT_FALLBACK, LaunchError, plan_launch
 from popper_upgrade.skills.embedding import Embedder
@@ -35,10 +37,6 @@ def model_row(job):
     if row is None:
         raise KeyError(f"model {job['model']} is not in the job's snapshot")
     return row
-
-
-def hf_home():
-    return Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface")
 
 
 def _gpu_query():
@@ -150,6 +148,27 @@ def check_disk(job):
     return _result("disk", True, f"{free:.0f} GB free in {target}, {required} GB needed")
 
 
+def prefetch_model(job, say=print):
+    model = model_row(job)
+    if model["backend"] != "vllm" or os.environ.get("POPPER_FAKE_BACKEND"):
+        return None
+    try:
+        fetch.download_model(model["served_model_id"], say=say)
+    except fetch.DownloadError as e:
+        return str(e)
+    return None
+
+
+def check_download(job):
+    model = model_row(job)
+    if model["backend"] != "vllm" or os.environ.get("POPPER_FAKE_BACKEND"):
+        return _result("download", True, "no model download is needed for this job")
+    problem = prefetch_model(job)
+    if problem is not None:
+        return _result("download", False, problem)
+    return _result("download", True, f"{model['served_model_id']} is in {hf_home()}")
+
+
 def check_data(job):
     config, popper_common = load_baseline()
     missing = popper_common.check_data()
@@ -206,6 +225,7 @@ CHECKS = (
     ("disk", "check_disk"),
     ("data", "check_data"),
     ("snapshot", "check_snapshot"),
+    ("download", "check_download"),
     (MODEL_CHECK, "check_model_answers"),
 )
 

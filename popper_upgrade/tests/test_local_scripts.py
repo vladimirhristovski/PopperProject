@@ -93,6 +93,8 @@ def wired(monkeypatch, tmp_path):
     calls = {}
     model = next(row for row in json.loads(REGISTRY.read_text(encoding="utf-8")) if row["name"] == "gpt-6-sol")
 
+    calls["base_model"] = model
+
     class Conn:
         autocommit = False
 
@@ -104,7 +106,7 @@ def wired(monkeypatch, tmp_path):
             pass
 
         def model(self, name):
-            return model
+            return calls.get("model", model)
 
     class Library:
         def __init__(self, path, embedder):
@@ -113,8 +115,9 @@ def wired(monkeypatch, tmp_path):
     def fake_run_experiment(*args, **kwargs):
         calls["kwargs"] = kwargs
         calls["budget_class"] = type(kwargs["budget"]).__name__
-        kwargs["budget"].begin({"evaluate": {"baseline": 1}}, args[0], model)
-        kwargs["budget"].exhausted = calls.get("exhausted", False)
+        if kwargs["budget"] is not None:
+            kwargs["budget"].begin({"evaluate": {"baseline": 1}}, args[0], model)
+            kwargs["budget"].exhausted = calls.get("exhausted", False)
         return "exp-1"
 
     def forbidden(*args, **kwargs):
@@ -169,3 +172,37 @@ def test_exhausted_budget_ends_with_a_distinct_exit_code(wired, capsys):
 
     assert code == 3
     assert "budget stopped the experiment" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("backend", ["anthropic", "openai", "openai_compatible", "anthropic_messages"])
+def test_paid_model_without_pricing_is_refused_before_anything_runs(wired, capsys, backend):
+    wired["model"] = {k: v for k, v in wired["base_model"].items() if k != "pricing"} | {"backend": backend}
+
+    code = run_openai.main(["--model", "gpt-6-sol", "--library-from", wired["library_path"]])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "has no pricing" in err
+    assert "--allow-unpriced" in err
+    assert "Nothing was run" in err
+    assert "kwargs" not in wired
+    assert wired["closed"] is True
+
+
+def test_allow_unpriced_runs_unguarded_with_a_loud_warning(wired, capsys):
+    wired["model"] = {k: v for k, v in wired["base_model"].items() if k != "pricing"}
+
+    code = run_openai.main(["--model", "gpt-6-sol", "--library-from", wired["library_path"], "--allow-unpriced"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "WARNING" in captured.err
+    assert "no budget limit" in captured.err
+    assert wired["kwargs"]["budget"] is None
+    assert wired["kwargs"]["on_serving"] is None
+
+
+def test_priced_models_do_not_need_the_flag_and_stay_guarded(wired):
+    assert run_openai.main(["--model", "gpt-6-sol", "--library-from", wired["library_path"]]) == 0
+    assert wired["budget_class"] == "CostGuard"
+

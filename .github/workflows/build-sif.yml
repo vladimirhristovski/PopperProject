@@ -44,9 +44,6 @@ jobs:
   build-upgrade:
     if: ${{ inputs.target == 'upgrade' }}
     runs-on: ubuntu-latest
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_USERNAME: ${{ secrets.HF_USERNAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,6 +62,9 @@ jobs:
           apptainer --version
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Download base SIF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
           python3 popper_upgrade/tools/fetch_base.py --revision "${{ inputs.base_revision }}"
@@ -115,15 +115,15 @@ jobs:
           tar -tzf "${ARCHIVE}" | grep -E '/(manifest.json|summary.md|summary.csv|runs.jsonl)$'
           ls -la
       - name: Upload SIF to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
           python3 -c "import os; from huggingface_hub import HfApi; token=os.environ['HF_TOKEN']; username=os.environ['HF_USERNAME']; repo_id=username+'/popper-llama-container'; api=HfApi(token=token); api.create_repo(repo_id=repo_id,repo_type='dataset',exist_ok=True,private=True); api.upload_file(path_or_fileobj='popper_upgrade.sif',path_in_repo='popper_upgrade.sif',repo_id=repo_id,repo_type='dataset'); print('Done!')"
   build-modern:
     if: ${{ inputs.target == 'modern' }}
     runs-on: ubuntu-latest
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_USERNAME: ${{ secrets.HF_USERNAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -187,15 +187,15 @@ jobs:
           tar -tzf "${ARCHIVE}" | grep -E '/(manifest.json|summary.md|summary.csv|runs.jsonl|freeze.json)$'
           ls -la
       - name: Upload SIF to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
           python3 -c "import os; from huggingface_hub import HfApi; token=os.environ['HF_TOKEN']; username=os.environ['HF_USERNAME']; repo_id=username+'/popper-llama-container'; api=HfApi(token=token); api.create_repo(repo_id=repo_id,repo_type='dataset',exist_ok=True,private=True); api.upload_file(path_or_fileobj='popper_modern.sif',path_in_repo='popper_modern.sif',repo_id=repo_id,repo_type='dataset'); print('Done!')"
   build-qwen:
     if: ${{ inputs.target == 'qwen' }}
     runs-on: ubuntu-latest
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_USERNAME: ${{ secrets.HF_USERNAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -239,6 +239,17 @@ jobs:
           python3 popper_upgrade/tools/check_env.py popper_upgrade/requirements.txt qwen_freeze.txt --popper-sha 59611864e09dd15d7528e240ad87c7ddbb4a701c
       - name: Test SIF
         run: apptainer test popper_qwen.sif
+      - name: Gate 3, vLLM serves the thinking-off flag
+        run: |
+          apptainer exec popper_qwen.sif /opt/vllm-env/bin/python - <<'PY'
+          import argparse
+          from vllm.entrypoints.openai.cli_args import FrontendArgs
+          parser = argparse.ArgumentParser()
+          FrontendArgs.add_cli_args(parser)
+          flags = [option for action in parser._actions for option in action.option_strings]
+          assert "--default-chat-template-kwargs" in flags, flags
+          print("--default-chat-template-kwargs OK")
+          PY
       - name: Gate 4, driver floor is 525.60
         run: |
           apptainer exec popper_qwen.sif /opt/popper-env/bin/python -c "from cluster.preflight import DRIVER_FLOORS; assert DRIVER_FLOORS['qwen'] == ('popper_qwen.sif', (525, 60)), DRIVER_FLOORS; print('qwen driver floor 525.60 OK')"
@@ -255,7 +266,18 @@ jobs:
           tail -n 1 output.txt | grep -F "${ARCHIVE}"
           tar -tzf "${ARCHIVE}" | grep -E '/(manifest.json|summary.md|summary.csv|runs.jsonl|freeze.json)$'
           ls -la
+      - name: Gate 8, canary entrypoint in fake mode
+        run: |
+          mkdir -p "${RUNNER_TEMP}/canary"
+          cd "${RUNNER_TEMP}/canary"
+          POPPER_FAKE_BACKEND=1 apptainer run "${GITHUB_WORKSPACE}/popper_qwen.sif" canary | tee output.txt
+          tail -n 1 output.txt | grep -F "PASS — run: singularity run --nv popper_qwen.sif"
+          python3 -c "import json; d = json.load(open('canary.json')); assert d['verdict'] == 'PASS' and d['fake_backend'], d"
+          ls -la
       - name: Upload SIF to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
         run: |
           pip install -q huggingface_hub
           python3 -c "import os; from huggingface_hub import HfApi; token=os.environ['HF_TOKEN']; username=os.environ['HF_USERNAME']; repo_id=username+'/popper-llama-container'; api=HfApi(token=token); api.create_repo(repo_id=repo_id,repo_type='dataset',exist_ok=True,private=True); api.upload_file(path_or_fileobj='popper_qwen.sif',path_in_repo='popper_qwen.sif',repo_id=repo_id,repo_type='dataset'); print('Done!')"

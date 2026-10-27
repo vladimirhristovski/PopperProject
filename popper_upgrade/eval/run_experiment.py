@@ -1,6 +1,8 @@
 import argparse
 import json
 import sys
+import time
+import urllib.request
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -26,12 +28,51 @@ from popper_upgrade.session import RunSession
 from popper_upgrade.skills.curator import CURATOR_SYSTEM_PROMPT
 from popper_upgrade.skills.extractor import EXTRACTOR_SYSTEM_PROMPT
 
+EXIT_SERVER_EXITED = 4
+HEALTH_PATH = "/v1/models"
+HTTP_OK = 200
 EXPERIMENT_NAMESPACE = uuid.UUID("5d3c1c53-7a55-4c4e-9a64-3c2f0b4f6b0a")
 PROMPTS = {
     "curator": CURATOR_SYSTEM_PROMPT,
     "reviewer": REVIEWER_SYSTEM_PROMPT,
     "extractor": EXTRACTOR_SYSTEM_PROMPT,
 }
+
+
+class ServerExited(ServingError):
+    pass
+
+
+def server_responding(port, attempts=2, pause=1.0):
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(pause)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{HEALTH_PATH}", timeout=15) as response:
+                if response.status == HTTP_OK:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _liveness(counter, model_row):
+    alive = getattr(counter, "alive", None)
+    if alive is None and model_row["backend"] == "vllm":
+        return lambda: server_responding(counter.port)
+    return alive or (lambda: True)
+
+
+def _require_alive(context):
+    if context["alive"]():
+        context["started"] += 1
+        return
+    detail = context["counter"].upstream_error() if hasattr(context["counter"], "upstream_error") else None
+    message = (
+        f"the vLLM server is no longer responding; stopped before starting the next run "
+        f"after {context['started']} runs this session"
+    )
+    raise ServerExited(f"{message} ({detail})" if detail else message)
 
 
 def default_snapshot_dir():
@@ -144,8 +185,9 @@ def _learn_phase(spec, learning, model_row, examples, popper_kwargs, environment
             continue
         if context["stop_requested"] is not None and context["stop_requested"]():
             break
-        if context["budget"] is not None and not context["budget"].may_start("learn"):
+        if context["budget"] is not None and not context["budget"].may_start("learn", run.arm):
             break
+        _require_alive(context)
         if agents is None:
             agents = build_agents(popper_kwargs, True, True, True)
         curator, reviewer, extractor = agents
@@ -177,8 +219,9 @@ def _evaluate_phase(
             continue
         if stop_requested is not None and stop_requested():
             break
-        if context["budget"] is not None and not context["budget"].may_start("evaluate"):
+        if context["budget"] is not None and not context["budget"].may_start("evaluate", run.arm):
             break
+        _require_alive(context)
         flags = flags_for_arm(run.arm)
         if flags not in agents:
             agents[flags] = build_agents(popper_kwargs, flags[0], flags[1], False)
@@ -259,7 +302,14 @@ def run_experiment(
         if on_serving is not None:
             on_serving(counter, model_row)
         popper_kwargs = {**popper_kwargs_for(model_row, counter.port), "plot_agent_architecture": False}
-        context = {"stop_requested": stop_requested, "trajectory_dir": trajectory_dir, "budget": budget}
+        context = {
+            "stop_requested": stop_requested,
+            "trajectory_dir": trajectory_dir,
+            "budget": budget,
+            "counter": counter,
+            "alive": _liveness(counter, model_row),
+            "started": 0,
+        }
         if learn_examples:
             learn_id = _learn_phase(
                 spec, learning, model_row, learn_examples, popper_kwargs, environment, base_id, per_task, counter,
@@ -267,7 +317,7 @@ def run_experiment(
             )
             if (stop_requested is not None and stop_requested()) or (budget is not None and budget.exhausted):
                 return learn_id
-            source = learning.freeze()
+            source = learning.freeze(learn_id)
             check_snapshot_isolation(source, {example["hypothesis"] for example in examples})
             experiment_id = experiment_id_for(spec, source.snapshot_id, per_task)
             extra = {
@@ -364,6 +414,9 @@ def main(argv=None):
             learning=learning,
             library=library,
         )
+    except ServerExited as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_SERVER_EXITED
     except (ValueError, KeyError, ServingError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

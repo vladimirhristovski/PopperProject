@@ -27,6 +27,7 @@ From: popper_llama.sif
 
 %environment
     export PYTHONPATH=/opt/popper:${PYTHONPATH:-}
+    export PYTHONNOUSERSITE=1
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
     export HF_HOME=${POPPER_HF_HOME:-$PWD/hf_cache}
     export TRANSFORMERS_CACHE=${HF_HOME}/transformers

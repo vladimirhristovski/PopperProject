@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cluster import canary as canary_module
 from cluster import parts as parts_module
 from cluster import preflight as preflight_module
 from cluster import store
@@ -221,6 +222,39 @@ def pack_archive(bundle, workdir, job, sif, exit_code, budget):
     return Packed(archive, runs, number, progress, complete)
 
 
+def pack_diagnostics(workdir, job, sif, exit_code, budget):
+    workdir = Path(workdir)
+    stem = f"popper_diagnostics_{job['name']}_{store.now().strftime('%Y%m%dT%H%M%SZ')}"
+    scratch = Path(tempfile.mkdtemp(dir=workdir, prefix=".stage_"))
+    stage = scratch / stem
+    stage.mkdir()
+    try:
+        last_error = logs.last_error_line(logs.read_tail(workdir / logs.VLLM_LOG).decode("utf-8", errors="replace"))
+        extra = {"diagnostics_only": True, "max_hours": budget.max_hours, "last_vllm_log_error": last_error}
+        manifest = build_manifest({}, job, [], sif, exit_code, extra)
+        (stage / parts_module.MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        if (workdir / "preflight.json").exists():
+            shutil.copyfile(workdir / "preflight.json", stage / "preflight.json")
+        for name in (logs.VLLM_LOG, logs.PROXY_LOG):
+            logs.copy_tail(workdir / name, stage / name)
+        archive = workdir / f"{stem}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(stage, arcname=stem)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return archive
+
+
+def diagnostics_message(archive, workdir):
+    lines = ["No run was recorded, so there are no results to send."]
+    base = Path(workdir).resolve()
+    present = [str(base / name) for name in (logs.VLLM_LOG, logs.PROXY_LOG) if (base / name).exists()]
+    if present:
+        lines.append("The model server logs are in: " + ", ".join(present))
+    lines.append(f"Please send this file to {OPERATOR}: {Path(archive).resolve()}")
+    return lines
+
+
 def preflight_message(result, workdir):
     failed = [check for check in result["checks"] if not check["ok"] and not check["detail"].startswith("not tried")]
     lines = ["The machine check failed, so nothing was run."]
@@ -292,6 +326,23 @@ def _run_preflight(job, workdir):
             return None, 128 + guard.signum
 
 
+def _gate(job, workdir, skip_preflight):
+    if skip_preflight:
+        problem = preflight_module.prefetch_model(job)
+        if problem is not None:
+            print(f"The model could not be downloaded, so nothing was run: {problem}")
+            return 1
+        return None
+    result, interrupted = _run_preflight(job, workdir)
+    if interrupted is not None:
+        print("Stopped while checking the machine; nothing was run.")
+        return interrupted
+    if not result["ok"]:
+        print("\n".join(preflight_message(result, workdir)))
+        return 1
+    return None
+
+
 def _apply_git_sha(job):
     if GIT_SHA_FILE.is_file():
         os.environ.setdefault("POPPER_GIT_SHA", GIT_SHA_FILE.read_text(encoding="utf-8").strip())
@@ -311,14 +362,9 @@ def run_job(name, workdir=".", skip_preflight=False, replicates=None, per_task=N
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     bundle = workdir / "bundle"
-    if not skip_preflight:
-        result, interrupted = _run_preflight(job, workdir)
-        if interrupted is not None:
-            print("Stopped while checking the machine; nothing was run.")
-            return interrupted
-        if not result["ok"]:
-            print("\n".join(preflight_message(result, workdir)))
-            return 1
+    blocked = _gate(job, workdir, skip_preflight)
+    if blocked is not None:
+        return blocked
     sif = _SifHash()
     if bundle.exists():
         store.close_stale_runs(bundle)
@@ -340,7 +386,8 @@ def run_job(name, workdir=".", skip_preflight=False, replicates=None, per_task=N
         if budget.exhausted:
             print(f"The {hours:g}-hour limit is too short to start even one run, so nothing was run.")
             return code or 1
-        print("No run was recorded, so there are no results to send.")
+        archive = pack_diagnostics(workdir, job, sif, code, budget)
+        print("\n".join(diagnostics_message(archive, workdir)))
         return code or 1
     print("\n".join(finish_message(packed, code, budget)))
     return code
@@ -356,7 +403,11 @@ def main(argv=None):
     run.add_argument("--replicates", type=int)
     run.add_argument("--examples-per-task", type=int)
     run.add_argument("--max-hours", type=float)
+    canary = commands.add_parser("canary")
+    canary.add_argument("--workdir", default=".")
     args = parser.parse_args(argv)
+    if args.command == "canary":
+        return canary_module.run_canary(args.workdir)
     return run_job(args.job, args.workdir, args.skip_preflight, args.replicates, args.examples_per_task, args.max_hours)
 
 

@@ -124,20 +124,24 @@ def freeze_bundle(snapshot_path, bundle_dir, embedder):
 
 
 def bundle_learning(snapshot_path, bundle_dir, embedder, library, sink):
-    return Learning(
-        source=library,
-        sink=LearningSink(sink, library),
-        freeze=lambda: freeze_bundle(snapshot_path, bundle_dir, embedder),
-    )
+    def freeze(key=None):
+        existing = Path(bundle_dir) / FROZEN_SNAPSHOT
+        if existing.exists():
+            return SnapshotSkillSource(existing, embedder)
+        return freeze_bundle(snapshot_path, bundle_dir, embedder)
+
+    return Learning(source=library, sink=LearningSink(sink, library), freeze=freeze)
 
 
 def db_learning(conn, embedder, sink, snapshot_dir):
     from popper_upgrade.db.skills_repo import SkillRepository
 
-    def freeze():
+    def freeze(key=None):
         from popper_upgrade.db.snapshot import export_snapshot
 
-        path = Path(snapshot_dir) / f"{uuid.uuid4()}.json"
+        path = Path(snapshot_dir) / f"{f'frozen-{key}' if key else uuid.uuid4()}.json"
+        if key and path.exists():
+            return SnapshotSkillSource(path, embedder)
         path.parent.mkdir(parents=True, exist_ok=True)
         export_snapshot(conn, path)
         return SnapshotSkillSource(path, embedder)

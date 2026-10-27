@@ -44,6 +44,12 @@ def test_short_password_rejected(db):
     assert user_by_name(db, "bob") is None
 
 
+def test_overlong_password_rejected(db):
+    with pytest.raises(ValueError):
+        create_user(db, "bob", "x" * 73, "user", None)
+    assert user_by_name(db, "bob") is None
+
+
 def test_duplicate_username_and_unknown_role_rejected(db, plain_user):
     with pytest.raises(ValueError):
         create_user(db, "alice", "another-password-1", "user", None)

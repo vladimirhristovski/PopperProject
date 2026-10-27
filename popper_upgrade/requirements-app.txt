@@ -1,4 +1,4 @@
-psycopg[binary]==3.2.3
-pgvector==0.3.6
-bcrypt==4.2.1
+psycopg[binary]==3.3.6
+pgvector==0.5.1
+bcrypt==5.0.0
 gradio==5.38.2

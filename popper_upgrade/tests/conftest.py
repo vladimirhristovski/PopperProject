@@ -107,10 +107,12 @@ def real_popper_runner(tmp_path, monkeypatch):
 def job_env(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
+    import popper_upgrade.eval.run_experiment as experiment_module
     import popper_upgrade.models as models_module
     import popper_upgrade.run as run_module
     import popper_upgrade.runner as runner_module
     from cluster import common
+    from cluster import preflight as preflight_module
     from popper_upgrade.tests.fakes import FakeEmbedder, FakePopper, patch_agent_classes, write_job
 
     class Server:
@@ -158,6 +160,8 @@ def job_env(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DATA_DIR", str(data_dir))
     monkeypatch.setattr(popper_common, "check_data", lambda: [])
     monkeypatch.setattr(common, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(preflight_module, "prefetch_model", lambda job, say=print: None)
+    monkeypatch.setattr(experiment_module, "server_responding", lambda port, **kwargs: True)
     monkeypatch.setattr(models_module, "VllmServer", Server)
     monkeypatch.setattr(models_module, "ModelVllmServer", Server)
     monkeypatch.setattr(models_module, "UsageProxy", Proxy)

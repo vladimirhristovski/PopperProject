@@ -346,3 +346,50 @@ def test_registry_entries_carry_prices_and_budgets():
     assert sol["pricing"] == {"input": 2, "cache_read": 0.2, "output": 10}
     assert sonnet["pricing"] == PRICING
     assert (sol["budget_eur"], sonnet["budget_eur"]) == (20, 20)
+
+
+def test_failed_and_usageless_calls_are_charged_at_the_worst_case(monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    ok_without_usage = (200, {"id": "m", "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"})
+    upstream = MessagesUpstream([(500, {"error": {"message": "overloaded"}}), ok_without_usage])
+    request = {"messages": [{"role": "user", "content": "q"}], "max_tokens": 1000}
+    output_price = _registry_models()["claude-sonnet-5-5"]["pricing"]["output"]
+    floor = 1000 * output_price / 1e6
+    try:
+        with serving_for(_sonnet(upstream)) as counter:
+            with pytest.raises(urllib.error.HTTPError) as caught:
+                post_chat(counter.port, request)
+            assert caught.value.code == 500
+            assert floor < counter.total_cost_usd() < floor * 1.05
+            after_error = counter.total_cost_usd()
+            post_chat(counter.port, request)
+            assert counter.total_cost_usd() - after_error > floor
+    finally:
+        upstream.close()
+
+    out = capsys.readouterr().out
+    assert "worst-case" in out
+    assert "no usage" in out
+
+
+def test_streaming_is_a_400_and_the_spend_limit_is_a_429(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    upstream = MessagesUpstream([_answer("one", output_tokens=100000)])
+    request = {"messages": [{"role": "user", "content": "q"}]}
+    try:
+        with serving_for(_sonnet(upstream)) as counter:
+            counter.set_limit(0.5)
+            with pytest.raises(urllib.error.HTTPError) as streamed:
+                post_chat(counter.port, {**request, "stream": True})
+            assert streamed.value.code == 400
+            assert "streaming" in json.loads(streamed.value.read())["error"]["message"]
+            post_chat(counter.port, request)
+            with pytest.raises(urllib.error.HTTPError) as limited:
+                post_chat(counter.port, request)
+    finally:
+        upstream.close()
+
+    body = json.loads(limited.value.read())
+    assert limited.value.code == 429
+    assert body["error"]["type"] == "budget_exceeded"
+    assert len(upstream.requests) == 1

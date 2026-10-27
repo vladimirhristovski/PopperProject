@@ -254,7 +254,7 @@ class _Recorder:
         self.events = events
         self.calls = 0
 
-    def freeze(self):
+    def freeze(self, key=None):
         self.calls += 1
         self.events.append("freeze")
         return self.frozen
@@ -393,14 +393,16 @@ class StubBudget:
     def __init__(self, allow):
         self.allow = allow
         self.calls = []
+        self.arms = []
         self.plans = []
         self.exhausted = False
 
     def begin(self, plan, spec_path, model_row):
         self.plans.append((plan, model_row["name"]))
 
-    def may_start(self, phase):
+    def may_start(self, phase, arm=None):
         self.calls.append(phase)
+        self.arms.append(arm)
         if len(self.calls) > self.allow:
             self.exhausted = True
             return False
@@ -414,6 +416,7 @@ def test_budget_gates_each_run_before_it_starts(tmp_path, sessions, serving):
 
     assert len(sessions) == 5
     assert budget.calls == ["evaluate"] * 6
+    assert budget.arms[:5] == [session.spec.arm for session in sessions]
     assert budget.exhausted is True
 
 
@@ -620,3 +623,223 @@ def test_supplied_library_is_still_checked_for_isolation(tmp_path, sessions, ser
 def test_supplied_library_must_be_frozen(tmp_path, sessions, serving, bench):
     with pytest.raises(ValueError, match="frozen snapshot"):
         _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path), library=object())
+
+
+def _bundle_learning(tmp_path):
+    from popper_upgrade.db.bundle import BundleSink
+    from popper_upgrade.eval.learning import bundle_learning, open_library
+
+    embedder = FakeEmbedder()
+    path = write_snapshot(
+        tmp_path / "snap.json",
+        [],
+        embedder,
+        models=[OLLAMA_MODEL],
+        hypothesis_sets={"gender_v1": HYPOTHESES},
+        datasets=DATASETS,
+    )
+    bundle = tmp_path / "bundle"
+    library = open_library(path, bundle, embedder)
+    sink = BundleSink(bundle, library)
+    base = SnapshotSkillSource(path, embedder)
+    return base, sink, bundle_learning(path, bundle, embedder, library, sink), bundle
+
+
+def test_resume_after_the_freeze_keeps_the_frozen_library_and_experiment(tmp_path, monkeypatch, serving):
+    state = {"retry": False, "stop": False, "tests": 0, "events": []}
+
+    class Persisting:
+        def __init__(self, spec, source, sink, curator, reviewer, extractor, trajectory_dir, **kwargs):
+            self.spec = spec
+            self.sink = sink
+
+        def run(self):
+            spec = self.spec
+            run_id = self.sink.create_run(
+                {
+                    "experiment_id": spec.experiment_id,
+                    "model_name": spec.model["name"],
+                    "arm": spec.arm,
+                    "task": spec.task,
+                    "hypothesis": spec.hypothesis,
+                    "replicate": spec.replicate,
+                    "permuted": spec.permuted,
+                    "library_snapshot_id": spec.library_snapshot_id,
+                }
+            )
+            state["events"].append((spec.split, spec.hypothesis, spec.arm, spec.replicate, spec.permuted))
+            if spec.split == "test":
+                state["tests"] += 1
+                state["stop"] = state["tests"] >= 4 and not state["retry"]
+                self.sink.finish_run(run_id, {})
+                return
+            if spec.hypothesis == TRAIN_HYPOTHESES[1] and not state["retry"]:
+                self.sink.finish_run(run_id, {"status": "error"})
+                return
+            skill = Skill(
+                f"skill-{TRAIN_HYPOTHESES.index(spec.hypothesis)}",
+                f"applicability of {spec.hypothesis}",
+                "template",
+                "",
+                "social science",
+                spec.hypothesis,
+            )
+            self.sink.add_candidate_skill(skill)
+            self.sink.add_skill_decision(
+                {"skill_id": skill.id, "trigger": "entry", "decider": "curator", "verdict": "approve", "reason": "r"}
+            )
+            self.sink.finish_run(run_id, {})
+
+    monkeypatch.setattr(module, "RunSession", Persisting)
+    monkeypatch.setattr(module, "build_agents", lambda kwargs, skills, reviewer, extractor: (object(),) * 3)
+    spec = _learning_spec(tmp_path)
+
+    base, sink, learning, bundle = _bundle_learning(tmp_path)
+    first_id = _run(tmp_path, base, sink, spec=spec, learning=learning, stop_requested=lambda: state["stop"])
+    frozen_before = (bundle / "frozen_snapshot.json").read_bytes()
+    first_events = list(state["events"])
+    state["events"].clear()
+    state.update(retry=True, stop=False)
+
+    base, sink, learning, bundle = _bundle_learning(tmp_path)
+    second_id = _run(tmp_path, base, sink, spec=spec, learning=learning)
+
+    assert second_id == first_id
+    assert (bundle / "frozen_snapshot.json").read_bytes() == frozen_before
+    assert ("train", TRAIN_HYPOTHESES[1], "skills_reviewer", 0, False) in state["events"]
+    second_tests = [event for event in state["events"] if event[0] == "test"]
+    assert second_tests
+    assert not set(second_tests) & {event for event in first_events if event[0] == "test"}
+    assert len(second_tests) + len([event for event in first_events if event[0] == "test"]) == 2 * (2 + 1) * 4
+    experiments = [json.loads(line) for line in (bundle / "experiments.jsonl").read_text().splitlines()]
+    assert len([row for row in experiments if row["spec"].get("phase") == "evaluate"]) == 1
+    runs = [json.loads(line) for line in (bundle / "runs.jsonl").read_text().splitlines()]
+    frozen_id = json.loads((bundle / "freeze.json").read_text())["snapshot_id"]
+    assert {row["library_snapshot_id"] for row in runs if row["experiment_id"] == first_id} == {frozen_id}
+
+
+VLLM_MODEL = {**OLLAMA_MODEL, "backend": "vllm", "environment": "cluster"}
+
+
+def _dying_serving(monkeypatch, alive_for, detail=None):
+    checks = []
+
+    @contextlib.contextmanager
+    def fake(model, log_dir=None):
+        counter = UsageCounter()
+        counter.port = 4321
+
+        def alive():
+            checks.append(1)
+            return len(checks) <= alive_for
+
+        counter.alive = alive
+        if detail is not None:
+            counter.upstream_error = lambda: detail
+        yield counter
+
+    monkeypatch.setattr(module, "serving_for", fake)
+    return checks
+
+
+def test_runs_stop_when_the_serving_process_has_exited(tmp_path, sessions, monkeypatch):
+    checks = _dying_serving(monkeypatch, 3, "CUDA out of memory")
+
+    with pytest.raises(module.ServerExited, match="no longer responding") as info:
+        _run(tmp_path, _snapshot(tmp_path), FakeSink())
+
+    assert len(sessions) == 3
+    assert len(checks) == 4
+    assert "after 3 runs" in str(info.value)
+    assert "CUDA out of memory" in str(info.value)
+
+
+def test_liveness_is_checked_before_the_first_learning_run_too(tmp_path, sessions, monkeypatch):
+    _dying_serving(monkeypatch, 0)
+    learning, recorder, _, _ = _learning(tmp_path, [])
+
+    with pytest.raises(module.ServerExited):
+        _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_learning_spec(tmp_path), learning=learning)
+
+    assert sessions == []
+    assert recorder.calls == 0
+
+
+def test_a_server_that_stays_up_does_not_interrupt_the_experiment(tmp_path, sessions, monkeypatch):
+    _dying_serving(monkeypatch, 10**6)
+
+    _run(tmp_path, _snapshot(tmp_path), FakeSink())
+
+    assert len(sessions) == 2 * (2 + 1) * 4
+
+
+def test_vllm_models_get_an_http_health_probe_by_default(tmp_path, sessions, monkeypatch):
+    probed = []
+
+    @contextlib.contextmanager
+    def fake(model, log_dir=None):
+        counter = UsageCounter()
+        counter.port = 4321
+        yield counter
+
+    monkeypatch.setattr(module, "serving_for", fake)
+    monkeypatch.setattr(module, "check_environment", lambda model, environment: None)
+    monkeypatch.setattr(module, "server_responding", lambda port: probed.append(port) or False)
+    embedder = FakeEmbedder()
+    path = write_snapshot(
+        tmp_path / "snap.json",
+        [],
+        embedder,
+        models=[VLLM_MODEL],
+        hypothesis_sets={"gender_v1": HYPOTHESES},
+        datasets=DATASETS,
+    )
+
+    with pytest.raises(module.ServerExited):
+        _run(tmp_path, SnapshotSkillSource(path, embedder), FakeSink())
+
+    assert probed == [4321]
+    assert sessions == []
+
+
+def test_server_responding_tells_a_live_server_from_a_dead_one():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    assert module.server_responding(port, attempts=1, pause=0) is True
+    server.shutdown()
+    server.server_close()
+
+    assert module.server_responding(port, attempts=2, pause=0) is False
+
+
+def test_main_exits_with_a_distinct_code_and_a_plain_message(tmp_path, monkeypatch, capsys):
+    from popper_upgrade.skills import embedding
+
+    embedder = FakeEmbedder()
+    snapshot = write_snapshot(tmp_path / "snap.json", [], embedder)
+    monkeypatch.setattr(embedding, "Embedder", lambda: embedder)
+
+    def dead(*args, **kwargs):
+        raise module.ServerExited("the vLLM server is no longer responding; stopped before the next run")
+
+    monkeypatch.setattr(module, "run_experiment", dead)
+
+    code = module.main(
+        ["--spec", "s.json", "--model", "m", "--source", f"snapshot:{snapshot}", "--sink", f"bundle:{tmp_path / 'b'}"]
+    )
+
+    assert code == module.EXIT_SERVER_EXITED == 4
+    assert "no longer responding" in capsys.readouterr().err

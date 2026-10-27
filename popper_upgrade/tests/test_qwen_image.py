@@ -46,3 +46,49 @@ def test_definition_self_test_checks_the_installed_versions():
 
     assert f"vllm.__version__ == '{pinned}'" in test_section
     assert "torch.version.cuda == '12.8'" in test_section
+
+
+def test_runscript_sends_canary_to_the_canary_and_everything_else_to_the_job():
+    runscript = DEFINITION.split("%runscript", 1)[1].split("%test", 1)[0]
+
+    assert 'if [ "${1:-}" = "canary" ]; then' in runscript
+    assert 'exec /opt/popper-env/bin/python -m cluster.job canary "$@"' in runscript
+    assert 'exec /opt/popper-env/bin/python -m cluster.job run "$@"' in runscript
+    assert runscript.index("shift") < runscript.index("cluster.job canary")
+    assert runscript.index("cluster.job canary") < runscript.index("cluster.job run")
+
+
+@pytest.mark.parametrize("name", ["popper_qwen.def", "popper_modern.def", "popper_upgrade.def"])
+def test_definitions_ignore_the_users_site_packages(name):
+    text = (ROOT / "cluster" / name).read_text(encoding="utf-8")
+    environment = text.split("%environment", 1)[1].split("%runscript", 1)[0]
+
+    assert "export PYTHONNOUSERSITE=1" in environment
+
+
+def test_dockerfile_ignores_the_users_site_packages():
+    assert "PYTHONNOUSERSITE=1" in DOCKERFILE
+
+
+CONSTRAINTS = ROOT / "popper_upgrade" / "constraints-popper-env.txt"
+CONSTRAINT_OPTION = "-c /opt/popper/popper_upgrade/constraints-popper-env.txt"
+
+
+def test_popper_env_is_installed_under_the_constraints_file():
+    modern = (ROOT / "cluster" / "popper_modern.def").read_text(encoding="utf-8")
+
+    for text in (DEFINITION, DOCKERFILE, modern):
+        assert f"-r /opt/popper/popper_upgrade/requirements.txt {CONSTRAINT_OPTION}" in text
+    assert "constraints-popper-env.txt /opt/popper/popper_upgrade/" in DOCKERFILE
+
+
+def test_constraints_agree_with_every_requirement_pin_and_keep_popper_at_its_commit():
+    from popper_upgrade.tools.check_env import _normalize, _read_pins, read_freeze
+
+    constraints = read_freeze(CONSTRAINTS)
+    pins = _read_pins(ROOT / "popper_upgrade" / "requirements.txt")
+
+    assert constraints["popper-agent"].endswith(f"@{POPPER_SHA}")
+    assert len(constraints) > 60
+    for name, version in pins.items():
+        assert constraints[_normalize(name)].removeprefix("==").split("+")[0] == version

@@ -1,5 +1,6 @@
 import json as _json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -188,6 +189,8 @@ OVERHEAD_GIB = 3.0
 CONTEXT_STEP = 1024
 NO_FLAG = "none"
 DEFAULT_FALLBACK = "run popper_upgrade.sif llama-anchor instead"
+STOP_GRACE_S = 60
+PROC_DIR = "/proc"
 
 
 class LaunchError(ValueError):
@@ -262,9 +265,11 @@ class ModelVllmServer(VllmServer):
 
     def _spawn(self, cmd, env):
         if self.log_path is None:
-            return subprocess.Popen(cmd, env=env)
+            return subprocess.Popen(cmd, env=env, start_new_session=True)
         with open(self.log_path, "ab") as log:
-            return subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+            return subprocess.Popen(
+                cmd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+            )
 
     def start(self):
         env = os.environ.copy()
@@ -297,3 +302,45 @@ class ModelVllmServer(VllmServer):
             time.sleep(2)
         print("ERROR: vLLM did not start within 20 minutes.")
         return False
+
+    def _signal_group(self, signum):
+        try:
+            os.killpg(self.vllm_proc.pid, signum)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _group_alive(self):
+        group = self.vllm_proc.pid
+        if not os.path.isdir(PROC_DIR):
+            try:
+                os.killpg(group, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            return True
+        for entry in os.listdir(PROC_DIR):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"{PROC_DIR}/{entry}/stat", encoding="utf-8", errors="replace") as handle:
+                    fields = handle.read().rsplit(")", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            if fields[0] != "Z" and fields[2] == str(group):
+                return True
+        return False
+
+    def stop(self):
+        if self.vllm_proc is None:
+            return
+        if self.vllm_proc.poll() is None or self._group_alive():
+            print("\nStopping vLLM...")
+            self._signal_group(signal.SIGTERM)
+            deadline = time.monotonic() + STOP_GRACE_S
+            while time.monotonic() < deadline and (self.vllm_proc.poll() is None or self._group_alive()):
+                time.sleep(0.2)
+            if self.vllm_proc.poll() is None or self._group_alive():
+                self._signal_group(signal.SIGKILL)
+            self.vllm_proc.wait()
+            print("vLLM stopped.")

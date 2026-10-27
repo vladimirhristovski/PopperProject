@@ -89,7 +89,7 @@ class Budget:
         median = store.phase_median_seconds(self.bundle_dir, phase)
         return median if median is not None else self.hint
 
-    def may_start(self, phase):
+    def may_start(self, phase, arm=None):
         if self.limit is None:
             return True
         if self.exhausted:

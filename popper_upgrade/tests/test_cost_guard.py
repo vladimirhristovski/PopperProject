@@ -196,3 +196,63 @@ def test_default_budget_is_twenty_euro_and_converts_at_the_configured_rate(tmp_p
     assert paid.ran == 22
     assert guard.spend_usd() == pytest.approx(22.0)
     assert guard.exhausted is True
+
+
+def _begun(tmp_path, history, **model):
+    lines = []
+    guard = CostGuard(lambda name: list(history), out=lines.append)
+    row = {"name": "m", "pricing": PRICING, "budget_eur": 5, **model}
+    guard.begin({"evaluate": {"baseline": 1, "skills": 1}}, tmp_path / "none.json", row)
+    return guard
+
+
+def test_the_pre_run_estimate_is_the_median_of_the_arm_then_overall_then_configured(tmp_path):
+    history = [("completed", 0.1, "baseline")] * 3 + [("completed", 3.0, "skills")] * 3
+    guard = _begun(tmp_path, history)
+
+    assert guard.estimate_usd("baseline") == pytest.approx(0.1)
+    assert guard.estimate_usd("skills") == pytest.approx(3.0)
+    assert guard.estimate_usd("random_skills") == pytest.approx(1.55)
+    assert guard.estimate_usd() == pytest.approx(1.55)
+    assert _begun(tmp_path, []).estimate_usd("skills") == pytest.approx(0.5 * EUR_USD_RATE)
+    legacy = _begun(tmp_path, [("completed", 2.0), ("completed", 4.0)])
+    assert legacy.estimate_usd("skills") == pytest.approx(3.0)
+
+
+def test_an_expensive_arm_is_stopped_while_a_cheap_arm_may_still_start(tmp_path):
+    history = [("completed", 0.1, "baseline")] * 3 + [("completed", 3.0, "skills")] * 3
+    guard = _begun(tmp_path, history, budget_eur=5)
+    guard.baseline_usd = 3.0
+
+    assert guard.may_start("evaluate", "baseline") is True
+    assert guard.may_start("evaluate", "skills") is False
+    assert guard.exhausted is True
+
+
+def test_runs_that_crashed_without_a_cost_are_charged_at_the_costliest_completed_run(tmp_path):
+    history = [("running", None, "skills"), ("error", None, "baseline"), ("completed", 2.0, "baseline")]
+    history += [("completed", 4.0, "skills"), ("error", 1.0, "skills")]
+
+    guard = _begun(tmp_path, history)
+
+    assert guard.baseline_usd == pytest.approx(2.0 + 4.0 + 1.0 + 2 * 4.0)
+    assert guard.estimate_usd("skills") == pytest.approx(4.0)
+
+
+def test_crashed_runs_without_any_completed_run_are_charged_at_the_configured_estimate(tmp_path):
+    guard = _begun(tmp_path, [("running", None, "skills")] * 2)
+
+    assert guard.baseline_usd == pytest.approx(2 * 0.5 * EUR_USD_RATE)
+
+
+def test_attach_caps_the_live_spend_at_what_is_left_of_the_budget(tmp_path):
+    guard = _begun(tmp_path, [("completed", 1.0, "baseline")], budget_eur=5)
+    counter = UsageCounter(PRICING)
+    guard.attach(counter)
+
+    assert counter.over_limit() is False
+    counter.add({"prompt_tokens": 0, "completion_tokens": _tokens(5 * EUR_USD_RATE - 1.0) - 1})
+    assert counter.over_limit() is False
+    counter.add({"prompt_tokens": 0, "completion_tokens": 2})
+    assert counter.over_limit() is True
+    assert "spend limit" in counter.limit_message()

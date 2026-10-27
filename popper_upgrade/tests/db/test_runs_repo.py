@@ -156,7 +156,11 @@ def test_run_cost_is_stored_and_listed_per_model(db):
     repo.finish_run(other, {"cost_usd": 9.0})
 
     assert repo.get_run(first)["cost_usd"] == 0.25
-    assert sorted(repo.model_costs("paid-model")) == [("completed", 0.25), ("error", 0.5)]
+    assert sorted(repo.model_costs("paid-model"), key=lambda row: row[0]) == [
+        ("completed", 0.25, "baseline"),
+        ("error", 0.5, "baseline"),
+        ("running", None, "baseline"),
+    ]
     assert repo.model_costs("never-ran") == []
 
 

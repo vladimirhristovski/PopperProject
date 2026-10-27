@@ -1,4 +1,6 @@
 import ast
+import os
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -163,3 +165,82 @@ def test_launch_server_does_not_start_when_memory_cannot_fit(monkeypatch):
     server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(serving=SERVING))
 
     assert server.start() is False
+
+
+def _wait_for_lines(path, count):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if path.exists() and len(path.read_text().split()) >= count:
+            return [int(pid) for pid in path.read_text().split()]
+        time.sleep(0.05)
+    pytest.fail("the fake process tree did not start")
+
+
+def _running(pid):
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return False
+    return fields[0] != "Z"
+
+
+def _tree(tmp_path, script):
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(), log_path=tmp_path / "vllm.log")
+    server.vllm_proc = server._spawn(["sh", "-c", script], os.environ.copy())
+    return server
+
+
+needs_proc = pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+
+
+@needs_proc
+def test_stop_ends_the_whole_process_tree(tmp_path):
+    marker = tmp_path / "pids"
+    server = _tree(tmp_path, f"sleep 300 & echo $! >> {marker}; sleep 300 & echo $! >> {marker}; wait")
+    children = _wait_for_lines(marker, 2)
+
+    server.stop()
+
+    assert server.vllm_proc.poll() is not None
+    assert not any(_running(pid) for pid in children)
+
+
+@needs_proc
+def test_stop_kills_children_that_outlive_the_server_process(tmp_path):
+    marker = tmp_path / "pids"
+    server = _tree(tmp_path, f"sleep 300 & echo $! >> {marker}; exit 0")
+    children = _wait_for_lines(marker, 1)
+    server.vllm_proc.wait(timeout=10)
+    assert _running(children[0])
+
+    server.stop()
+
+    assert not _running(children[0])
+
+
+@needs_proc
+def test_stop_escalates_to_kill_when_terminate_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(vllm_module, "STOP_GRACE_S", 1)
+    marker = tmp_path / "pids"
+    server = _tree(tmp_path, f"trap '' TERM; sleep 300 & echo $! >> {marker}; wait")
+    children = _wait_for_lines(marker, 1)
+    started = time.monotonic()
+
+    server.stop()
+
+    assert time.monotonic() - started >= 1
+    assert server.vllm_proc.poll() is not None
+    assert not any(_running(pid) for pid in children)
+
+
+def test_stop_without_a_process_does_nothing():
+    vllm_module.ModelVllmServer("org/m", 8000, launch=_model()).stop()
+
+
+def test_servers_start_in_their_own_session(tmp_path):
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(), log_path=tmp_path / "vllm.log")
+    server.vllm_proc = server._spawn(["sleep", "300"], os.environ.copy())
+    try:
+        assert os.getpgid(server.vllm_proc.pid) == server.vllm_proc.pid != os.getpgid(0)
+    finally:
+        server.stop()

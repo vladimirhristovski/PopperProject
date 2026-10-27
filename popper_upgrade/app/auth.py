@@ -6,6 +6,7 @@ import bcrypt
 from popper_upgrade.db.audit import log_event
 
 MIN_PASSWORD_LENGTH = 10
+MAX_PASSWORD_BYTES = 72
 BCRYPT_COST = 12
 ROLES = ("user", "admin")
 
@@ -69,6 +70,8 @@ def create_user(conn, username, password, role, actor):
         raise ValueError("username is required")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"password must be at most {MAX_PASSWORD_BYTES} bytes")
     if user_by_name(conn, username) is not None:
         raise ValueError(f"username {username} is taken")
     user_id = str(uuid.uuid4())

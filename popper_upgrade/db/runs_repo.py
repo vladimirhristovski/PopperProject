@@ -27,9 +27,9 @@ class RunRepository:
 
     def model_costs(self, model_name):
         rows = self._conn.execute(
-            "select status, cost_usd from runs.runs where model_name = %s and cost_usd is not null", (model_name,)
+            "select status, cost_usd, arm from runs.runs where model_name = %s", (model_name,)
         ).fetchall()
-        return [(row["status"], row["cost_usd"]) for row in rows]
+        return [(row["status"], row["cost_usd"], row["arm"]) for row in rows]
 
     def create_run(self, config):
         row = {"status": "running", **config}

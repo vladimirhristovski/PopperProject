@@ -9,13 +9,14 @@ from pathlib import Path, PurePosixPath
 URL = "https://dataverse.harvard.edu/api/access/datafile/10888484"
 MARKER = ("benchmark", "discoverybench")
 CHUNK = 1 << 20
+TIMEOUT = 60
 
 
 def download(url, destination):
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     digest = hashlib.md5()
     size = 0
-    with urllib.request.urlopen(request) as response, Path(destination).open("wb") as out:
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response, Path(destination).open("wb") as out:
         for chunk in iter(lambda: response.read(CHUNK), b""):
             out.write(chunk)
             digest.update(chunk)

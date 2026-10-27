@@ -1,4 +1,6 @@
-from popper_upgrade.config import EUR_USD_RATE
+import json
+
+from popper_upgrade.config import EUR_USD_RATE, WORST_CASE_BYTES_PER_TOKEN, WORST_CASE_OUTPUT_TOKENS
 
 PER_MILLION = 1_000_000
 PRICE_FIELDS = ("input", "cache_read", "cache_write", "output")
@@ -52,6 +54,28 @@ def cost_usd(parts, pricing):
             price = pricing["input"] if field in ("cache_read", "cache_write") else 0.0
         total += tokens * price / PER_MILLION
     return total
+
+
+OUTPUT_CAP_KEYS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+
+
+def output_cap(body):
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return WORST_CASE_OUTPUT_TOKENS
+    if isinstance(data, dict):
+        for key in OUTPUT_CAP_KEYS:
+            value = data.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+    return WORST_CASE_OUTPUT_TOKENS
+
+
+def worst_case_cost(body, pricing):
+    prompt = len(body or b"") // WORST_CASE_BYTES_PER_TOKEN + 1
+    parts = {"input": prompt, "cache_read": 0, "cache_write": 0, "output": output_cap(body)}
+    return cost_usd(parts, pricing)
 
 
 def usd_to_eur(usd, rate=EUR_USD_RATE):

@@ -241,3 +241,17 @@ def test_run_model_script_passes_the_chosen_model(monkeypatch):
 
     assert run_model.main(["--model", "any-model", "--snapshot", "s.json", "--bundle-dir", "b"]) == 0
     assert calls == [("any-model", Path("s.json"), Path("b"))]
+
+
+def test_experiment_job_exits_with_a_distinct_code_when_the_server_died(env, monkeypatch, capsys):
+    from popper_upgrade.eval.run_experiment import ServerExited
+
+    def dead(*args, **kwargs):
+        raise ServerExited("the vLLM server is no longer responding; stopped before starting the next run")
+
+    monkeypatch.setattr(common, "run_experiment", dead)
+
+    code = common.run_experiment_job("spec.json", VLLM_MODEL["name"], env.snapshot, env.bundle)
+
+    assert code == 4
+    assert "no longer responding" in capsys.readouterr().out

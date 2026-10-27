@@ -29,7 +29,7 @@ def export_snapshot(conn, path, include_rejected=True):
     if len(models) > 1:
         raise ValueError(f"library mixes embedding models: {sorted(models)}")
     embedding_model = models.pop() if models else DEFAULT_EMBEDDING_MODEL
-    skills = [{**asdict(row_to_skill(row)), "embedding": [float(x) for x in row["embedding"]]} for row in rows]
+    skills = [{**asdict(row_to_skill(row)), "embedding": row["embedding"].to_list()} for row in rows]
     skill_ids = [skill["id"] for skill in skills]
     decisions = conn.execute(
         "select distinct on (skill_id) skill_id::text as skill_id, verdict, reason, decider "

@@ -28,7 +28,7 @@ From: vllm/vllm-openai:v0.32.0-cu129
     uv venv --python 3.10 /opt/popper-env
     uv pip install --python /opt/popper-env/bin/python torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
     uv pip install --python /opt/popper-env/bin/python --no-deps git+https://github.com/snap-stanford/POPPER.git@59611864e09dd15d7528e240ad87c7ddbb4a701c
-    uv pip install --python /opt/popper-env/bin/python -r /opt/popper/popper_upgrade/requirements.txt
+    uv pip install --python /opt/popper-env/bin/python -r /opt/popper/popper_upgrade/requirements.txt -c /opt/popper/popper_upgrade/constraints-popper-env.txt
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
     /opt/popper-env/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
     rm -rf /tmp/uv-cache
@@ -36,6 +36,7 @@ From: vllm/vllm-openai:v0.32.0-cu129
 
 %environment
     export PYTHONPATH=/opt/popper:${PYTHONPATH:-}
+    export PYTHONNOUSERSITE=1
     export POPPER_IMAGE=modern
     export POPPER_VLLM_PYTHON=$(cat /opt/popper/vllm_python)
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st

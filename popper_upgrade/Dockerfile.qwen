@@ -22,9 +22,9 @@ RUN --mount=type=cache,target=/tmp/uv-cache \
     && uv pip install --python /opt/popper-env/bin/python torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu \
     && uv pip install --python /opt/popper-env/bin/python --no-deps git+https://github.com/snap-stanford/POPPER.git@59611864e09dd15d7528e240ad87c7ddbb4a701c
 
-COPY popper_upgrade/requirements.txt /opt/popper/popper_upgrade/requirements.txt
+COPY popper_upgrade/requirements.txt popper_upgrade/constraints-popper-env.txt /opt/popper/popper_upgrade/
 RUN --mount=type=cache,target=/tmp/uv-cache \
-    uv pip install --python /opt/popper-env/bin/python -r /opt/popper/popper_upgrade/requirements.txt \
+    uv pip install --python /opt/popper-env/bin/python -r /opt/popper/popper_upgrade/requirements.txt -c /opt/popper/popper_upgrade/constraints-popper-env.txt \
     && SENTENCE_TRANSFORMERS_HOME=/opt/popper/st /opt/popper-env/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 COPY popper_upgrade /opt/popper/popper_upgrade
@@ -34,7 +34,8 @@ RUN rm -rf /opt/popper/popper_upgrade/app /opt/popper/popper_upgrade/tests \
     && mkdir -p /opt/popper/data/bio_database \
     && chmod -R a+rX /opt/popper /opt/popper-env /opt/vllm-env /opt/uv-python
 
-ENV PYTHONPATH=/opt/popper \
+ENV PYTHONNOUSERSITE=1 \
+    PYTHONPATH=/opt/popper \
     POPPER_IMAGE=qwen \
     POPPER_VLLM_PYTHON=/opt/vllm-env/bin/python \
     SENTENCE_TRANSFORMERS_HOME=/opt/popper/st

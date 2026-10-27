@@ -52,15 +52,31 @@ class CostGuard:
             spec_value(spec_path, BUDGET_KEY, name) or _positive(model_row.get(BUDGET_KEY)) or DEFAULT_BUDGET_EUR
         )
         self.estimate_eur = spec_value(spec_path, ESTIMATE_KEY, name) or DEFAULT_RUN_ESTIMATE_EUR
-        self.baseline_usd = sum(cost for _, cost in self._history(name))
+        self.baseline_usd = self._baseline()
         self.planned = sum(sum(arms.values()) for arms in plan.values())
         self._out(
             f"[cost] {name}: budget EUR {self.budget_eur:.2f} at {self.rate} USD per EUR (ECB {self.rate_date}); "
             f"already spent EUR {usd_to_eur(self.baseline_usd, self.rate):.2f}"
         )
 
+    def _rows(self):
+        for row in self._history(self.model_name):
+            status, cost, *rest = row
+            yield status, cost, rest[0] if rest else None
+
+    def _baseline(self):
+        rows = list(self._rows())
+        known = sum(cost for _, cost, _ in rows if cost is not None)
+        unknown = sum(1 for _, cost, _ in rows if cost is None)
+        if not unknown:
+            return known
+        completed = [cost for status, cost, _ in rows if status == "completed" and cost is not None]
+        charge = max(completed) if completed else eur_to_usd(self.estimate_eur, self.rate)
+        return known + unknown * charge
+
     def attach(self, counter, model_row=None):
         self.counter = counter
+        counter.set_limit(max(eur_to_usd(self.budget_eur, self.rate) - self.baseline_usd, 0.0))
 
     def spend_usd(self):
         live = self.counter.total_cost_usd() if self.counter is not None else 0.0
@@ -69,20 +85,24 @@ class CostGuard:
     def spend_eur(self):
         return usd_to_eur(self.spend_usd(), self.rate)
 
-    def completed_costs(self):
-        return [cost for status, cost in self._history(self.model_name) if status == "completed"]
+    def completed_costs(self, arm=None):
+        return [
+            cost
+            for status, cost, row_arm in self._rows()
+            if status == "completed" and cost is not None and (arm is None or row_arm == arm)
+        ]
 
-    def estimate_usd(self):
-        costs = self.completed_costs()
+    def estimate_usd(self, arm=None):
+        costs = (self.completed_costs(arm) if arm is not None else []) or self.completed_costs()
         if costs:
             return statistics.median(costs)
         return eur_to_usd(self.estimate_eur, self.rate)
 
-    def may_start(self, phase):
+    def may_start(self, phase, arm=None):
         if self.exhausted:
             return False
         spend = self.spend_usd()
-        estimate = self.estimate_usd()
+        estimate = self.estimate_usd(arm)
         budget = eur_to_usd(self.budget_eur, self.rate)
         self._out(self._line(spend, estimate, phase))
         if spend + estimate > budget:

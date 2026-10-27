@@ -5,7 +5,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 from popper_upgrade.config import ANTHROPIC_DEFAULT_MAX_TOKENS
-from popper_upgrade.serving.usage import RelayProxy
+from popper_upgrade.serving.usage import RelayProxy, error_body, reached_provider
 
 CHAT_PATH = "/v1/chat/completions"
 MESSAGES_PATH = "/v1/messages"
@@ -154,10 +154,6 @@ def error_message(status, body):
         return {"message": f"HTTP {status}", "type": "api_error"}
 
 
-def error_body(status, message, kind="api_error"):
-    return json.dumps({"error": {"message": message, "type": kind, "code": status}}).encode()
-
-
 def _make_handler(upstream, counter, rewrite_request, headers):
     class _AnthropicHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -179,9 +175,13 @@ def _make_handler(upstream, counter, rewrite_request, headers):
                 with urllib.request.urlopen(request, timeout=300) as r:
                     return r.status, r.read()
             except urllib.error.HTTPError as e:
+                if body is not None:
+                    counter.charge_worst_case(body, f"upstream answered HTTP {e.code}")
                 return e.code, e.read()
             except Exception as e:
                 print(f"  [proxy] {method} {path} failed: {e}")
+                if body is not None and reached_provider(e):
+                    counter.charge_worst_case(body, f"upstream failed: {e}")
                 return None, None
 
         def _relay(self, method, body):
@@ -199,13 +199,17 @@ def _make_handler(upstream, counter, rewrite_request, headers):
             if self.path != CHAT_PATH:
                 self._relay("POST", rewrite_request(self.path, body))
                 return
+            if counter.over_limit():
+                self._send(429, error_body(429, counter.limit_message(), "budget_exceeded"))
+                return
             try:
                 request = to_messages_request(json.loads(rewrite_request(self.path, body)))
             except (ValueError, TypeError, AttributeError) as e:
                 print(f"  [proxy] request not translatable: {e}")
                 self._send(400, error_body(400, f"request not translatable: {e}", "invalid_request_error"))
                 return
-            status, resp = self._call("POST", MESSAGES_PATH, json.dumps(request).encode())
+            translated = json.dumps(request).encode()
+            status, resp = self._call("POST", MESSAGES_PATH, translated)
             if status is None:
                 self._send(502, error_body(502, "upstream unreachable"))
                 return
@@ -220,7 +224,7 @@ def _make_handler(upstream, counter, rewrite_request, headers):
                 print(f"  [proxy] response not translatable: {e}")
                 self._send(502, error_body(502, "upstream response not translatable"))
                 return
-            counter.add(chat.get("usage"))
+            counter.record(chat.get("usage"), translated)
             self._send(HTTP_OK, json.dumps(chat).encode())
 
     return _AnthropicHandler

@@ -1,9 +1,10 @@
 import json
+import socket
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from popper_upgrade.serving.pricing import cost_usd, usage_parts
+from popper_upgrade.serving.pricing import cost_usd, usage_parts, worst_case_cost
 
 LOCAL_HOST = "127.0.0.1"
 
@@ -20,6 +21,8 @@ class UsageCounter:
         self.pricing = pricing
         self.port = None
         self.error_log = None
+        self.alive = None
+        self._limit = None
 
     def add(self, usage):
         if not isinstance(usage, dict):
@@ -39,6 +42,40 @@ class UsageCounter:
             if call_cost is not None:
                 self._cost = (self._cost or 0.0) + call_cost
                 self._total_cost += call_cost
+
+    def _charge(self, amount):
+        with self._lock:
+            self._cost = (self._cost or 0.0) + amount
+            self._total_cost += amount
+
+    def charge_worst_case(self, request_body, reason):
+        amount = worst_case_cost(request_body, self.pricing)
+        if amount is None:
+            return None
+        self._charge(amount)
+        print(f"  [proxy] charged worst-case USD {amount:.4f}: {reason}")
+        return amount
+
+    def record(self, usage, request_body):
+        if self.pricing and usage_parts(usage) is None:
+            self.charge_worst_case(request_body, "response carried no usage")
+            return
+        self.add(usage)
+
+    def set_limit(self, limit_usd):
+        with self._lock:
+            self._limit = limit_usd
+
+    def over_limit(self):
+        with self._lock:
+            return self._limit is not None and self._total_cost >= self._limit
+
+    def limit_message(self):
+        with self._lock:
+            return (
+                f"spend limit reached: USD {self._total_cost:.4f} of USD {self._limit:.4f} for this model; "
+                "no further calls are allowed"
+            )
 
     def snapshot(self):
         with self._lock:
@@ -78,6 +115,25 @@ def read_usage(body):
     return data.get("usage") if isinstance(data, dict) else None
 
 
+def error_body(status, message, kind="api_error"):
+    return json.dumps({"error": {"message": message, "type": kind, "code": status}}).encode()
+
+
+def is_streaming(body):
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("stream") is True
+
+
+def reached_provider(error):
+    return not isinstance(getattr(error, "reason", None), ConnectionRefusedError | socket.gaierror)
+
+
+STREAMING_REFUSAL = "streaming is not supported for paid models because its usage cannot be metered"
+
+
 def _make_handler(upstream, counter, rewrite_request, rewrite_response, headers):
     class _RelayHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -97,11 +153,13 @@ def _make_handler(upstream, counter, rewrite_request, rewrite_response, headers)
                     resp_type = r.headers.get("Content-Type", "application/json")
             except Exception as e:
                 print(f"  [proxy] {method} {self.path} failed: {e}")
+                if body is not None and reached_provider(e):
+                    counter.charge_worst_case(body, f"upstream failed: {e}")
                 self.send_response(502)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            counter.add(read_usage(resp_body))
+            counter.record(read_usage(resp_body), body)
             resp_body = rewrite_response(resp_body)
             self.send_response(status)
             self.send_header("Content-Type", resp_type)
@@ -112,8 +170,22 @@ def _make_handler(upstream, counter, rewrite_request, rewrite_response, headers)
         def do_GET(self):
             self._relay("GET", None)
 
+        def _refuse(self, status, message, kind):
+            payload = error_body(status, message, kind)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if counter.over_limit():
+                self._refuse(429, counter.limit_message(), "budget_exceeded")
+                return
+            if counter.pricing and is_streaming(body):
+                self._refuse(400, STREAMING_REFUSAL, "invalid_request_error")
+                return
             self._relay("POST", rewrite_request(self.path, body))
 
     return _RelayHandler

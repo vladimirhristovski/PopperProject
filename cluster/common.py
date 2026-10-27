@@ -8,7 +8,7 @@ from pathlib import Path
 from popper_upgrade.db.bundle import BundleSink
 from popper_upgrade.db.snapshot import SnapshotSkillSource
 from popper_upgrade.eval.learning import bundle_learning, open_library
-from popper_upgrade.eval.run_experiment import run_experiment
+from popper_upgrade.eval.run_experiment import EXIT_SERVER_EXITED, ServerExited, run_experiment
 from popper_upgrade.models import ServingError, check_environment, serving_for
 from popper_upgrade.run import run_hypotheses
 from popper_upgrade.skills.embedding import Embedder
@@ -200,6 +200,9 @@ def run_experiment_job(
                 library=frozen,
                 log_dir=log_dir,
             )
+        except ServerExited as e:
+            print(f"ERROR: {e}")
+            return EXIT_SERVER_EXITED
         except (ValueError, KeyError, ServingError) as e:
             print(f"ERROR: {e}")
             return 1
