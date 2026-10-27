@@ -63,6 +63,7 @@ jobs:
           wget -q https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer_${APPTAINER_VER}_amd64.deb
           sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
           apptainer --version
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Download base SIF
         run: |
           pip install -q huggingface_hub
@@ -139,6 +140,7 @@ jobs:
           wget -q https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer_${APPTAINER_VER}_amd64.deb
           sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
           apptainer --version
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Prepare data
         run: |
           pip install -q datasets requests pandas
@@ -210,6 +212,7 @@ jobs:
           wget -q https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VER}/apptainer_${APPTAINER_VER}_amd64.deb
           sudo dpkg -i apptainer_${APPTAINER_VER}_amd64.deb
           apptainer --version
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Prepare data
         run: |
           pip install -q datasets requests pandas
