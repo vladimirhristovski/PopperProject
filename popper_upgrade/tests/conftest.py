@@ -114,8 +114,10 @@ def job_env(monkeypatch, tmp_path):
     from popper_upgrade.tests.fakes import FakeEmbedder, FakePopper, patch_agent_classes, write_job
 
     class Server:
-        def __init__(self, model, port, host="localhost", proxy_port=None):
-            pass
+        def __init__(self, model, port, host="localhost", proxy_port=None, launch=None, log_path=None):
+            type(self).log_paths.append(log_path)
+
+        log_paths = []
 
         def start(self):
             return True
@@ -157,14 +159,15 @@ def job_env(monkeypatch, tmp_path):
     monkeypatch.setattr(popper_common, "check_data", lambda: [])
     monkeypatch.setattr(common, "Embedder", FakeEmbedder)
     monkeypatch.setattr(models_module, "VllmServer", Server)
+    monkeypatch.setattr(models_module, "ModelVllmServer", Server)
     monkeypatch.setattr(models_module, "UsageProxy", Proxy)
     monkeypatch.setattr(runner_module, "Popper", Popper)
     patch_agent_classes(monkeypatch, run_module)
     monkeypatch.setenv("POPPER_GIT_SHA", "placeholder")
     monkeypatch.delenv("POPPER_GIT_SHA")
-    for name in ("APPTAINER_CONTAINER", "SINGULARITY_CONTAINER", "HF_TOKEN", "HF_USERNAME", "POPPER_RESULTS_REPO"):
+    for name in ("APPTAINER_CONTAINER", "SINGULARITY_CONTAINER", "HF_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     job = write_job(tmp_path / "jobs" / "demo")
     return SimpleNamespace(
-        job=job, job_dir=job["dir"], workdir=tmp_path / "work", popper=Popper, tmp_path=tmp_path
+        job=job, job_dir=job["dir"], workdir=tmp_path / "work", popper=Popper, tmp_path=tmp_path, server=Server
     )

@@ -25,6 +25,12 @@ class RunRepository:
         ).fetchall()
         return {run_key(row) for row in rows}
 
+    def model_costs(self, model_name):
+        rows = self._conn.execute(
+            "select status, cost_usd from runs.runs where model_name = %s and cost_usd is not null", (model_name,)
+        ).fetchall()
+        return [(row["status"], row["cost_usd"]) for row in rows]
+
     def create_run(self, config):
         row = {"status": "running", **config}
         row.setdefault("id", str(uuid.uuid4()))

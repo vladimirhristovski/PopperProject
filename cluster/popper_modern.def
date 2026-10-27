@@ -1,0 +1,52 @@
+Bootstrap: docker
+From: vllm/vllm-openai:v0.32.0-cu129
+
+%labels
+    Description vllm 0.32.0 (cu129, needs driver 575.51 or newer) model server plus a Python 3.10 POPPER environment with the proven pins
+
+%files
+    popper_upgrade /opt/popper/popper_upgrade
+    cluster /opt/popper/cluster
+    baseline_experiment/config.py /opt/popper/baseline_experiment/config.py
+    baseline_experiment/popper_common.py /opt/popper/baseline_experiment/popper_common.py
+    data/winobias.csv /opt/popper/data/winobias.csv
+    data/bbq.csv /opt/popper/data/bbq.csv
+    data/stereoset.csv /opt/popper/data/stereoset.csv
+    data/benchmark/discoverybench /opt/popper/data/benchmark/discoverybench
+
+%post
+    rm -rf /opt/popper/popper_upgrade/app
+    mkdir -p /opt/popper/data/bio_database
+    find /opt/popper/cluster/jobs -mindepth 1 -maxdepth 1 -name llama-anchor -exec rm -rf {} +
+    apt-get update -y
+    apt-get install -y --no-install-recommends git ca-certificates curl
+    rm -rf /var/lib/apt/lists/*
+    command -v python3 > /opt/popper/vllm_python
+    command -v uv > /dev/null || python3 -m pip install --break-system-packages uv
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+    export UV_CACHE_DIR=/tmp/uv-cache
+    uv venv --python 3.10 /opt/popper-env
+    uv pip install --python /opt/popper-env/bin/python torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+    uv pip install --python /opt/popper-env/bin/python --no-deps git+https://github.com/snap-stanford/POPPER.git@59611864e09dd15d7528e240ad87c7ddbb4a701c
+    uv pip install --python /opt/popper-env/bin/python -r /opt/popper/popper_upgrade/requirements.txt
+    export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
+    /opt/popper-env/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+    rm -rf /tmp/uv-cache
+    chmod -R a+rX /opt/popper /opt/popper-env /opt/uv-python
+
+%environment
+    export PYTHONPATH=/opt/popper:${PYTHONPATH:-}
+    export POPPER_IMAGE=modern
+    export POPPER_VLLM_PYTHON=$(cat /opt/popper/vllm_python)
+    export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
+    export HF_HOME=${POPPER_HF_HOME:-$PWD/hf_cache}
+    export TRANSFORMERS_CACHE=${HF_HOME}/transformers
+
+%runscript
+    exec /opt/popper-env/bin/python -m cluster.job run "$@"
+
+%test
+    "$(cat /opt/popper/vllm_python)" -c "import vllm; print('vLLM:', vllm.__version__)"
+    /opt/popper-env/bin/python -c "import torch; print('PyTorch:', torch.__version__); assert torch.__version__.startswith('2.5.1')"
+    /opt/popper-env/bin/python -c "import popper; print('POPPER: OK')"
+    /opt/popper-env/bin/python -c "import popper_upgrade, sentence_transformers, cluster.job"

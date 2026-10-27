@@ -3,10 +3,49 @@ import json
 import uuid
 from pathlib import Path
 
-MODEL_COLUMNS = (
-    "id::text as id, name, backend, served_model_id, size_class, environment, port, default_temperature, "
-    "base_url, api_key_env, strip_tools, min_disk_gb"
+MODEL_FIELDS = (
+    "name",
+    "backend",
+    "served_model_id",
+    "size_class",
+    "environment",
+    "port",
+    "default_temperature",
+    "base_url",
+    "api_key_env",
+    "strip_tools",
+    "min_disk_gb",
+    "quantization",
+    "dtype",
+    "max_model_len",
+    "system_prefix",
+    "request_overrides",
+    "serving",
+    "pricing",
+    "budget_eur",
 )
+JSON_FIELDS = ("request_overrides", "serving", "pricing")
+MODEL_COLUMNS = "id::text as id, " + ", ".join(MODEL_FIELDS)
+
+
+def model_values(model):
+    values = []
+    for field in MODEL_FIELDS:
+        value = model.get("strip_tools", True) if field == "strip_tools" else model.get(field)
+        if field in JSON_FIELDS and value is not None:
+            value = json.dumps(value)
+        values.append(value)
+    return values
+
+
+def upsert_model_row(conn, model):
+    placeholders = ", ".join("%s::jsonb" if field in JSON_FIELDS else "%s" for field in MODEL_FIELDS)
+    updates = ", ".join(f"{field} = excluded.{field}" for field in MODEL_FIELDS[1:])
+    return conn.execute(
+        f"insert into registry.models as m (id, {', '.join(MODEL_FIELDS)}) values (%s, {placeholders}) "
+        f"on conflict (name) do update set {updates} returning to_jsonb(m) as row",
+        [str(uuid.uuid4()), *model_values(model)],
+    ).fetchone()["row"]
 
 
 def prompt_hash(role, text):
@@ -20,31 +59,7 @@ class RegistryRepository:
     def seed_from(self, directory):
         directory = Path(directory)
         for model in json.loads((directory / "models.json").read_text(encoding="utf-8")):
-            self._conn.execute(
-                "insert into registry.models (id, name, backend, served_model_id, size_class, environment, port, "
-                "default_temperature, base_url, api_key_env, strip_tools, min_disk_gb) "
-                "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "on conflict (name) do update set backend = excluded.backend, "
-                "served_model_id = excluded.served_model_id, size_class = excluded.size_class, "
-                "environment = excluded.environment, port = excluded.port, "
-                "default_temperature = excluded.default_temperature, base_url = excluded.base_url, "
-                "api_key_env = excluded.api_key_env, strip_tools = excluded.strip_tools, "
-                "min_disk_gb = excluded.min_disk_gb",
-                (
-                    str(uuid.uuid4()),
-                    model["name"],
-                    model["backend"],
-                    model["served_model_id"],
-                    model["size_class"],
-                    model["environment"],
-                    model.get("port"),
-                    model.get("default_temperature"),
-                    model.get("base_url"),
-                    model.get("api_key_env"),
-                    model.get("strip_tools", True),
-                    model.get("min_disk_gb"),
-                ),
-            )
+            upsert_model_row(self._conn, model)
         sets = json.loads((directory / "hypotheses.json").read_text(encoding="utf-8"))
         for name, hypotheses in sets.items():
             set_id = self._conn.execute(

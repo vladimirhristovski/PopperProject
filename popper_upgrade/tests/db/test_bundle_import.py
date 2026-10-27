@@ -1,3 +1,5 @@
+import json
+import tarfile
 import uuid
 from dataclasses import replace
 
@@ -9,6 +11,7 @@ from popper_upgrade.db.skills_repo import SkillRepository
 from popper_upgrade.db.snapshot import SnapshotSkillSource, export_snapshot
 from popper_upgrade.skills.schema import Skill
 from popper_upgrade.tests.fakes import FakeEmbedder, run_config
+from popper_upgrade.tests.part_fixtures import build_two_parts
 
 pytestmark = pytest.mark.db
 
@@ -124,3 +127,83 @@ def test_import_applies_entry_decisions_once(db, tmp_path, library):
     db.execute("update skills.skills set approved = false, decided_by = 'human' where id = %s", (approved_id,))
     import_bundle(db, tmp_path / "bundle")
     assert state(approved_id) == {"approved": False, "decided_by": "human"}
+
+
+def test_import_records_the_frozen_snapshot_once(db, tmp_path, library):
+    snapshot, skill_id = library
+    _write_bundle(tmp_path, snapshot, skill_id)
+    frozen_id = str(uuid.uuid4())
+    info = {
+        "snapshot_id": frozen_id,
+        "created_at": "2026-10-19T00:00:00+00:00",
+        "embedding_model": snapshot.embedding_model,
+        "content_hash": "0" * 64,
+        "skill_ids": [skill_id],
+    }
+    (tmp_path / "bundle" / "freeze.json").write_text(json.dumps(info), encoding="utf-8")
+
+    first = import_bundle(db, tmp_path / "bundle")
+    second = import_bundle(db, tmp_path / "bundle")
+
+    assert first["frozen_snapshots"] == 1
+    assert second["frozen_snapshots"] == 0
+    row = db.execute(
+        "select content_hash, skill_ids from registry.library_snapshots where id = %s", (frozen_id,)
+    ).fetchone()
+    assert row == {"content_hash": "0" * 64, "skill_ids": [skill_id]}
+
+
+def _pack(directory, archive):
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(directory, arcname="popper_results_parts")
+    return archive
+
+
+@pytest.fixture
+def two_parts(tmp_path, library):
+    snapshot, skill_id = library
+    return build_two_parts(tmp_path, snapshot, skill_id)
+
+
+def test_parts_import_in_any_order_and_repeated(db, tmp_path, two_parts):
+    first, second = two_parts["first"], _pack(two_parts["second"], tmp_path / "part2.tar.gz")
+    candidate_id = two_parts["candidate_id"]
+
+    late = import_bundle(db, second)
+    assert (late["runs"], late["candidate_skills"], late["frozen_snapshots"]) == (1, 1, 1)
+    orphan = db.execute(
+        "select source_run_id, approved from skills.skills where id = %s", (candidate_id,)
+    ).fetchone()
+    assert orphan == {"source_run_id": None, "approved": None}
+
+    early = import_bundle(db, first)
+    assert (early["runs"], early["candidate_skills"], early["skill_decisions"]) == (1, 1, 1)
+    repaired = db.execute(
+        "select source_run_id::text as source_run_id, approved, decided_by from skills.skills where id = %s",
+        (candidate_id,),
+    ).fetchone()
+    assert repaired == {"source_run_id": two_parts["learn_id"], "approved": True, "decided_by": "curator"}
+
+    again = [import_bundle(db, second), import_bundle(db, first), import_bundle(db, second)]
+    assert all(set(counts.values()) == {0} for counts in again)
+    runs = db.execute(
+        "select count(*) as n from runs.runs where experiment_id = %s", (two_parts["experiment_id"],)
+    ).fetchone()["n"]
+    assert runs == 2
+    assert _count(db, "runs.run_skills") >= 1
+    snapshot = db.execute(
+        "select count(*) as n from registry.library_snapshots where id = %s", (two_parts["frozen_id"],)
+    ).fetchone()["n"]
+    assert snapshot == 1
+
+
+def test_parts_in_shipping_order_give_the_same_result(db, tmp_path, two_parts):
+    candidate_id = two_parts["candidate_id"]
+
+    import_bundle(db, two_parts["first"])
+    import_bundle(db, two_parts["second"])
+
+    row = db.execute(
+        "select source_run_id::text as source_run_id, approved from skills.skills where id = %s", (candidate_id,)
+    ).fetchone()
+    assert row == {"source_run_id": two_parts["learn_id"], "approved": True}

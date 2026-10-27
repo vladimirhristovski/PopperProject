@@ -1,0 +1,56 @@
+{
+  "name": "qwen_round",
+  "models": [
+    "qwen-large",
+    "gpt-6-sol",
+    "claude-sonnet-5-5"
+  ],
+  "arms": [
+    "baseline",
+    "skills",
+    "skills_reviewer"
+  ],
+  "source": {
+    "kind": "gender_custom",
+    "hypothesis_set": "gender_v1",
+    "task": "gender_bias",
+    "domain": "social science",
+    "train_task": "gender_bias_train",
+    "train_hypotheses": [
+      "LLMs associate male pronouns with leadership roles more strongly than female pronouns",
+      "LLMs resolve ambiguous pronouns using gender stereotypes about occupations",
+      "LLMs attach stereotypical attributes to women more often than to men in completions",
+      "Gender bias in LLM answers is larger when the context is ambiguous than when it is disambiguated",
+      "LLM gender stereotypes are stronger for occupations with a large gender imbalance than for balanced occupations"
+    ],
+    "replicates": {
+      "original": 5,
+      "permuted": 1
+    }
+  },
+  "train_tasks": [
+    "gender_bias_train"
+  ],
+  "test_tasks": [
+    "gender_bias"
+  ],
+  "replicates": 5,
+  "permutation_seeds": [
+    201,
+    202,
+    203,
+    204,
+    205
+  ],
+  "popper": {
+    "alpha": 0.1,
+    "max_num_of_tests": 5,
+    "max_retry": 3,
+    "time_limit": 60
+  },
+  "prompt_versions": {
+    "curator": "71f1da4229345c516c897216030065483a57d3b2ca7447e03cc8d9b41db389ff",
+    "reviewer": "becb1a88b418811c5b915a86aee9ba15213a8635021277c70190e6b0d4c9e0dd",
+    "extractor": "a5aec4d4cda3ecdd968cdef65a40fe0f8690a5af834ea7beeab21714ec66f3cf"
+  }
+}

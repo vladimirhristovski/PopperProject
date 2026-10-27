@@ -1,11 +1,13 @@
 import contextlib
 import json
+from collections import Counter
 
 import pytest
 
 import popper_upgrade.eval.run_experiment as module
 from popper_upgrade.db.snapshot import SnapshotSkillSource
 from popper_upgrade.eval.controls import RandomSkillSource, WrongDomainSkillSource
+from popper_upgrade.eval.learning import Learning
 from popper_upgrade.eval.run_experiment import (
     apply_overrides,
     current_prompt_hashes,
@@ -48,7 +50,7 @@ def serving(monkeypatch):
     entered = []
 
     @contextlib.contextmanager
-    def fake(model):
+    def fake(model, log_dir=None):
         entered.append(model["name"])
         counter = UsageCounter()
         counter.port = 4321
@@ -216,3 +218,405 @@ def test_experiment_id_is_shared_across_models_and_depends_on_snapshot(tmp_path)
     assert experiment_id_for(spec, "snap") == experiment_id_for(other_models, "snap")
     assert experiment_id_for(spec, "snap") != experiment_id_for(spec, "other-snap")
     assert experiment_id_for(spec, "snap") != experiment_id_for(spec, "snap", 1)
+
+
+TRAIN_HYPOTHESES = ["train hypothesis one", "train hypothesis two", "train hypothesis three"]
+
+
+def _learning_spec(tmp_path, **changes):
+    source = {
+        "kind": "gender_custom",
+        "hypothesis_set": "gender_v1",
+        "task": "gender_bias",
+        "train_task": "gender_bias_train",
+        "train_hypotheses": TRAIN_HYPOTHESES,
+    }
+    return _write_spec(tmp_path, source=source, train_tasks=["gender_bias_train"], **changes)
+
+
+def _frozen(tmp_path, skills=()):
+    embedder = FakeEmbedder()
+    path = write_snapshot(
+        tmp_path / "frozen.json",
+        list(skills),
+        embedder,
+        snapshot_id="frozen-1",
+        models=[OLLAMA_MODEL],
+        hypothesis_sets={"gender_v1": HYPOTHESES},
+        datasets=DATASETS,
+    )
+    return SnapshotSkillSource(path, embedder)
+
+
+class _Recorder:
+    def __init__(self, frozen, events, stop_after_freeze=False):
+        self.frozen = frozen
+        self.events = events
+        self.calls = 0
+
+    def freeze(self):
+        self.calls += 1
+        self.events.append("freeze")
+        return self.frozen
+
+
+def _learning(tmp_path, events, skills=()):
+    recorder = _Recorder(_frozen(tmp_path, skills), events)
+    sink = FakeSink()
+    live = object()
+    return Learning(source=live, sink=sink, freeze=recorder.freeze), recorder, sink, live
+
+
+@pytest.fixture
+def ordered_sessions(monkeypatch, sessions, serving):
+    events = []
+
+    class Ordered(FakeSession):
+        def run(self):
+            events.append(("train" if self.spec.split == "train" else "test", self.spec.arm))
+            return "run"
+
+    monkeypatch.setattr(module, "RunSession", Ordered)
+    agent_calls = []
+
+    def agents(kwargs, skills, reviewer, extractor):
+        agent_calls.append((skills, reviewer, extractor))
+        return (object(), object(), object() if extractor else None)
+
+    monkeypatch.setattr(module, "build_agents", agents)
+    return events, agent_calls
+
+
+def test_learning_runs_train_split_before_freezing_and_evaluating(tmp_path, serving, ordered_sessions):
+    events, agent_calls = ordered_sessions
+    learning, recorder, learn_sink, live = _learning(tmp_path, events)
+    sink = FakeSink()
+    source = _snapshot(tmp_path)
+
+    experiment_id = _run(tmp_path, source, sink, spec=_learning_spec(tmp_path), learning=learning)
+
+    count = len(TRAIN_HYPOTHESES)
+    assert events[:count] == [("train", "skills_reviewer")] * count
+    assert events[count] == "freeze"
+    assert all(event[0] == "test" for event in events[count + 1 :])
+    assert (True, True, True) in agent_calls
+    assert recorder.calls == 1
+    assert learn_sink.experiments[0]["spec"]["phase"] == "learn"
+    assert sink.experiments[0]["spec"]["phase"] == "evaluate"
+    assert sink.experiments[0]["id"] == experiment_id
+    assert sink.experiments[0]["spec"]["learn_experiment_id"] == learn_sink.experiments[0]["id"]
+    assert sink.experiments[0]["spec"]["base_snapshot_id"] == source.snapshot_id
+    assert experiment_id != learn_sink.experiments[0]["id"]
+
+
+def test_train_runs_learn_on_the_live_library_and_test_runs_use_the_frozen_one(tmp_path, sessions, serving):
+    events = []
+    learning, _, learn_sink, live = _learning(tmp_path, events)
+    source = _snapshot(tmp_path)
+
+    _run(tmp_path, source, FakeSink(), spec=_learning_spec(tmp_path), learning=learning)
+
+    train = [s for s in sessions if s.spec.split == "train"]
+    test = [s for s in sessions if s.spec.split == "test"]
+    assert len(train) == len(TRAIN_HYPOTHESES)
+    assert {s.spec.arm for s in train} == {"skills_reviewer"}
+    assert {s.spec.learn for s in train} == {True}
+    assert {s.spec.permuted for s in train} == {False}
+    assert {s.spec.hypothesis for s in train} == set(TRAIN_HYPOTHESES)
+    assert {s.spec.library_snapshot_id for s in train} == {source.snapshot_id}
+    assert {s.source for s in train} == {live}
+    assert {s.spec.library_snapshot_id for s in test} == {"frozen-1"}
+    assert {type(s.source) for s in test if s.spec.arm == "baseline"} == {SnapshotSkillSource}
+    assert not {s.spec.hypothesis for s in test} & set(TRAIN_HYPOTHESES)
+
+
+def test_zero_approved_skills_still_evaluates(tmp_path, sessions, serving):
+    learning, recorder, _, _ = _learning(tmp_path, [])
+
+    _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_learning_spec(tmp_path), learning=learning)
+
+    assert recorder.calls == 1
+    assert len([s for s in sessions if s.spec.split == "test"]) == 2 * (2 + 1) * 4
+
+
+def test_learning_resumes_across_phases(tmp_path, sessions, serving):
+    learning, _, learn_sink, _ = _learning(tmp_path, [])
+    sink = FakeSink()
+    source = _snapshot(tmp_path)
+    spec = _learning_spec(tmp_path)
+    _run(tmp_path, source, sink, spec=spec, learning=learning)
+    train = [s.spec for s in sessions if s.spec.split == "train"]
+    tests = [s.spec for s in sessions if s.spec.split == "test"]
+    sessions.clear()
+    learn_sink.completed = {run_identity(spec) for spec in train}
+    sink.completed = {run_identity(spec) for spec in tests[:5]}
+
+    _run(tmp_path, source, sink, spec=spec, learning=learning)
+
+    assert [s for s in sessions if s.spec.split == "train"] == []
+    assert len(sessions) == len(tests) - 5
+
+
+def test_stop_during_learning_skips_freeze_and_evaluation(tmp_path, sessions, serving):
+    learning, recorder, learn_sink, _ = _learning(tmp_path, [])
+
+    experiment_id = _run(
+        tmp_path, _snapshot(tmp_path), FakeSink(), spec=_learning_spec(tmp_path), learning=learning,
+        stop_requested=lambda: True,
+    )
+
+    assert recorder.calls == 0
+    assert sessions == []
+    assert experiment_id == learn_sink.experiments[0]["id"]
+
+
+def test_specs_without_train_tasks_ignore_learning(tmp_path, sessions, serving):
+    learning, recorder, learn_sink, _ = _learning(tmp_path, [])
+    sink = FakeSink()
+
+    _run(tmp_path, _snapshot(tmp_path), sink, learning=learning)
+
+    assert recorder.calls == 0
+    assert learn_sink.experiments == []
+    assert "phase" not in sink.experiments[0]["spec"]
+    assert len(sessions) == 2 * (2 + 1) * 4
+
+
+def test_train_hypotheses_overlapping_a_test_hypothesis_are_refused_by_isolation(tmp_path, sessions, serving):
+    leaked = Skill("s1", "a", "d", "", "social science", "Gender hypothesis ONE", approved=True)
+
+    with pytest.raises(ValueError, match="derived from test hypothesis"):
+        _run(tmp_path, _snapshot(tmp_path, [leaked]), FakeSink(), spec=_learning_spec(tmp_path))
+
+
+class StubBudget:
+    def __init__(self, allow):
+        self.allow = allow
+        self.calls = []
+        self.plans = []
+        self.exhausted = False
+
+    def begin(self, plan, spec_path, model_row):
+        self.plans.append((plan, model_row["name"]))
+
+    def may_start(self, phase):
+        self.calls.append(phase)
+        if len(self.calls) > self.allow:
+            self.exhausted = True
+            return False
+        return True
+
+
+def test_budget_gates_each_run_before_it_starts(tmp_path, sessions, serving):
+    budget = StubBudget(5)
+
+    _run(tmp_path, _snapshot(tmp_path), FakeSink(), budget=budget)
+
+    assert len(sessions) == 5
+    assert budget.calls == ["evaluate"] * 6
+    assert budget.exhausted is True
+
+
+def test_budget_is_told_the_plan_and_experiment_rows_carry_it(tmp_path, sessions, serving):
+    budget = StubBudget(100)
+    sink = FakeSink()
+
+    _run(tmp_path, _snapshot(tmp_path), sink, budget=budget)
+
+    arms = {"baseline": 6, "skills": 6, "random_skills": 6, "wrong_domain_skills": 6}
+    assert budget.plans == [({"evaluate": arms}, "llama3.1:8b")]
+    assert sink.experiments[0]["spec"]["planned_runs"] == arms
+    assert len(budget.calls) == len(sessions) == 24
+
+
+def test_runs_already_completed_are_not_charged_to_the_budget(tmp_path, sessions, serving):
+    source = _snapshot(tmp_path)
+    sink = FakeSink()
+    _run(tmp_path, source, sink)
+    done = {run_identity(s.spec) for s in sessions[:7]}
+    sessions.clear()
+    sink.completed = done
+    budget = StubBudget(100)
+
+    _run(tmp_path, source, sink, budget=budget)
+
+    assert len(budget.calls) == len(sessions) == 24 - 7
+
+
+def test_stopped_and_resumed_runs_follow_the_same_order(tmp_path, sessions, serving):
+    source = _snapshot(tmp_path)
+    sink = FakeSink()
+    _run(tmp_path, source, sink)
+    order = [run_identity(s.spec) for s in sessions]
+    sessions.clear()
+    _run(tmp_path, source, sink, budget=StubBudget(9))
+    first = [run_identity(s.spec) for s in sessions]
+    sessions.clear()
+    sink.completed = set(first)
+
+    _run(tmp_path, source, sink)
+
+    assert first == order[:9]
+    assert [run_identity(s.spec) for s in sessions] == order[9:]
+
+
+def test_every_prefix_of_the_schedule_is_balanced_across_arms(tmp_path, sessions, serving):
+    _run(tmp_path, _snapshot(tmp_path), FakeSink())
+
+    arms = [s.spec.arm for s in sessions]
+    for size in range(len(arms) + 1):
+        counts = [arms[:size].count(arm) for arm in set(arms)]
+        assert max(counts) - min(counts) <= 1
+
+
+def test_budget_stop_during_learning_skips_freeze_and_evaluation(tmp_path, sessions, serving):
+    learning, recorder, learn_sink, _ = _learning(tmp_path, [])
+    budget = StubBudget(1)
+
+    experiment_id = _run(
+        tmp_path, _snapshot(tmp_path), FakeSink(), spec=_learning_spec(tmp_path), learning=learning, budget=budget
+    )
+
+    assert [s.spec.split for s in sessions] == ["train"]
+    assert recorder.calls == 0
+    assert experiment_id == learn_sink.experiments[0]["id"]
+    assert budget.plans[0][0] == {
+        "learn": {"skills_reviewer": len(TRAIN_HYPOTHESES)},
+        "evaluate": {"baseline": 6, "skills": 6, "random_skills": 6, "wrong_domain_skills": 6},
+    }
+    assert learn_sink.experiments[0]["spec"]["planned_runs"] == {"skills_reviewer": len(TRAIN_HYPOTHESES)}
+
+
+def test_budget_stop_in_the_evaluation_after_learning_still_freezes(tmp_path, sessions, serving):
+    learning, recorder, _, _ = _learning(tmp_path, [])
+    budget = StubBudget(len(TRAIN_HYPOTHESES))
+
+    _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_learning_spec(tmp_path), learning=learning, budget=budget)
+
+    assert recorder.calls == 1
+    assert [s.spec.split for s in sessions] == ["train"] * len(TRAIN_HYPOTHESES)
+    assert budget.calls[-1] == "evaluate"
+
+
+def _combined_spec(tmp_path, **gender):
+    source = {
+        "kind": "combined",
+        "parts": [
+            {
+                "kind": "gender_custom",
+                "hypothesis_set": "gender_v1",
+                "task": "gender_bias",
+                "train_task": "gender_bias_train",
+                "train_hypotheses": TRAIN_HYPOTHESES,
+                "replicates": {"original": 2, "permuted": 3},
+                **gender,
+            },
+            {
+                "kind": "discoverybench",
+                "path": "bench",
+                "sample": {"originals": 1, "seed": 9},
+                "replicates": {"original": 1, "permuted": 1},
+            },
+        ],
+    }
+    return _write_spec(
+        tmp_path,
+        source=source,
+        train_tasks=["gender_bias_train", "db_train"],
+        test_tasks=["gender_bias", "db_test"],
+        replicates=3,
+        permutation_seeds=[5, 6, 7],
+        arms=["baseline", "skills"],
+    )
+
+
+@pytest.fixture
+def bench(monkeypatch):
+    calls = []
+
+    def examples(path, tasks, per_task=None, sample=None):
+        calls.append((path, set(tasks), sample))
+        base = {"domain": "economics", "factory": lambda seed: lambda: None, "datasets": []}
+        return [
+            {**base, "task": task, "hypothesis": f"{task} claim", "answer": answer, "permuted": not answer}
+            for task in sorted(tasks & {"db_test", "db_train"})
+            for answer in (True, False)
+        ]
+
+    monkeypatch.setattr(module, "discoverybench_examples", examples)
+    return calls
+
+
+def test_combined_source_gives_each_part_its_own_replicates(tmp_path, sessions, serving, bench):
+    _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path))
+
+    gender = [s.spec for s in sessions if s.spec.task == "gender_bias"]
+    discovery = [s.spec for s in sessions if s.spec.task == "db_test"]
+    assert len(gender) == 2 * 2 * (2 + 3)
+    assert len(discovery) == 2 * (1 + 1)
+    assert {s.replicate for s in gender if not s.permuted} == {0, 1}
+    assert {s.replicate for s in gender if s.permuted} == {0, 1, 2}
+    assert {s.replicate for s in discovery} == {0}
+    assert {s.popper_kwargs["domain"] for s in discovery} == {"economics"}
+    assert bench[0][2] == {"originals": 1, "seed": 9}
+
+
+def test_combined_source_learns_from_unsampled_train_tasks(tmp_path, sessions, serving, bench):
+    learning, _, _, _ = _learning(tmp_path, [])
+
+    _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path), learning=learning)
+
+    train = [s.spec for s in sessions if s.spec.split == "train"]
+    assert Counter(s.task for s in train) == {"gender_bias_train": 3, "db_train": 1}
+    assert bench[0][1:] == ({"gender_bias", "db_test"}, {"originals": 1, "seed": 9})
+    assert bench[1] == (str(tmp_path / "bench"), {"gender_bias_train", "db_train"}, None)
+
+
+def test_replicate_override_replaces_part_replicates(tmp_path):
+    spec = load_spec(_combined_spec(tmp_path))
+
+    narrowed = apply_overrides(spec, None, 1)
+
+    assert narrowed.replicates == 1
+    assert all("replicates" not in part for part in narrowed.source["parts"])
+    assert "replicates" in spec.source["parts"][0]
+
+
+def test_supplied_library_replaces_learning_and_the_live_library(tmp_path, sessions, serving, bench):
+    learning, recorder, learn_sink, _ = _learning(tmp_path, [])
+    library = _frozen(tmp_path)
+
+    experiment_id = _run(
+        tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path), learning=learning, library=library
+    )
+
+    assert recorder.calls == 0
+    assert learn_sink.experiments == []
+    assert {s.spec.split for s in sessions} == {"test"}
+    assert {s.spec.library_snapshot_id for s in sessions} == {"frozen-1"}
+    assert experiment_id == experiment_id_for(load_spec(_combined_spec(tmp_path)), "frozen-1")
+
+
+def test_supplied_library_is_still_checked_for_isolation(tmp_path, sessions, serving, bench):
+    leaked = Skill("s1", "a", "d", "", "social science", "Gender hypothesis ONE", approved=True)
+    library = SnapshotSkillSource(
+        write_snapshot(
+            tmp_path / "leaky.json",
+            [leaked],
+            FakeEmbedder(),
+            snapshot_id="leaky",
+            models=[OLLAMA_MODEL],
+            hypothesis_sets={"gender_v1": HYPOTHESES},
+            datasets=DATASETS,
+        ),
+        FakeEmbedder(),
+    )
+
+    with pytest.raises(ValueError, match="derived from test hypothesis"):
+        _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path), library=library)
+    assert sessions == []
+
+
+def test_supplied_library_must_be_frozen(tmp_path, sessions, serving, bench):
+    with pytest.raises(ValueError, match="frozen snapshot"):
+        _run(tmp_path, _snapshot(tmp_path), FakeSink(), spec=_combined_spec(tmp_path), library=object())

@@ -14,9 +14,10 @@ from popper_upgrade.session import git_sha
 
 SNAPSHOT = "snapshot.json"
 SPEC = "spec.json"
+LIBRARY = "library.json"
 
 
-def build_job(conn, name, model, spec_path, out_dir, embedder, data_dir=None):
+def build_job(conn, name, model, spec_path, out_dir, embedder, data_dir=None, library_from=None):
     spec = load_spec(spec_path)
     if model not in spec.models:
         raise ValueError(f"model {model} is not part of {spec.name}")
@@ -34,16 +35,20 @@ def build_job(conn, name, model, spec_path, out_dir, embedder, data_dir=None):
         examples = build_examples(spec, source, data_dir or default_data_dir())
         if not examples:
             raise ValueError(f"{spec.name} has no examples for its test tasks")
-        check_snapshot_isolation(source, {example["hypothesis"] for example in examples})
+        library = SnapshotSkillSource(library_from, embedder) if library_from else source
+        check_snapshot_isolation(library, {example["hypothesis"] for example in examples})
     except BaseException:
         snapshot_path.unlink(missing_ok=True)
         raise
     shutil.copyfile(spec_path, out_dir / SPEC)
+    if library_from:
+        shutil.copyfile(library_from, out_dir / LIBRARY)
     job = {
         "name": name,
         "model": model,
         "spec": SPEC,
         "snapshot": SNAPSHOT,
+        **({"library_from": LIBRARY} if library_from else {}),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_sha": git_sha(),
     }
@@ -57,6 +62,7 @@ def main(argv=None):
     parser.add_argument("--model", required=True)
     parser.add_argument("--spec", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--library-from")
     args = parser.parse_args(argv)
     from popper_upgrade.db.connection import connect
     from popper_upgrade.skills.embedding import Embedder
@@ -64,7 +70,7 @@ def main(argv=None):
     conn = connect()
     conn.autocommit = True
     try:
-        job = build_job(conn, args.name, args.model, args.spec, args.out, Embedder())
+        job = build_job(conn, args.name, args.model, args.spec, args.out, Embedder(), library_from=args.library_from)
     except (ValueError, KeyError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

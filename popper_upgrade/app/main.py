@@ -16,7 +16,7 @@ from popper_upgrade.app.tabs.common import current_user, guarded
 from popper_upgrade.db.connection import DEFAULT_DSN, connect
 from popper_upgrade.db.migrate import migrate
 from popper_upgrade.db.registry_repo import RegistryRepository
-from popper_upgrade.models import COMPATIBLE_BACKEND, popper_kwargs_for, serving_for
+from popper_upgrade.models import PROXIED_BACKENDS, popper_kwargs_for, serving_for
 from popper_upgrade.run import default_trajectory_dir
 from popper_upgrade.skills.curator import SkillCurator
 from popper_upgrade.skills.embedding import Embedder
@@ -63,7 +63,7 @@ def make_curator_factory(dsn):
     served = {}
 
     def serving_port(model):
-        if model["backend"] != COMPATIBLE_BACKEND:
+        if model["backend"] not in PROXIED_BACKENDS:
             return None
         if model["name"] not in served:
             context = serving_for(model)

@@ -1,0 +1,85 @@
+{
+  "name": "gender_permutation_v2",
+  "models": [
+    "qwen2.5:1.5b",
+    "llama3.1:8b",
+    "gpt-4o",
+    "casperhansen/llama-3.3-70b-instruct-awq",
+    "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16",
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.8-27B-FP8",
+    "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "gpt-6.1-sol",
+    "gpt-6-luna",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "grok-4.7",
+    "grok-4.20-0309-non-reasoning",
+    "deepseek-v4-pro",
+    "deepseek-flash"
+  ],
+  "arms": [
+    "baseline",
+    "skills",
+    "skills_reviewer",
+    "random_skills",
+    "wrong_domain_skills"
+  ],
+  "source": {
+    "kind": "gender_custom",
+    "hypothesis_set": "gender_v1",
+    "task": "gender_bias",
+    "domain": "social science",
+    "train_task": "gender_bias_train",
+    "train_hypotheses": [
+      "LLMs associate male pronouns with leadership roles more strongly than female pronouns",
+      "LLMs resolve ambiguous pronouns using gender stereotypes about occupations",
+      "LLMs attach stereotypical attributes to women more often than to men in completions",
+      "Gender bias in LLM answers is larger when the context is ambiguous than when it is disambiguated",
+      "LLM gender stereotypes are stronger for occupations with a large gender imbalance than for balanced occupations"
+    ]
+  },
+  "train_tasks": [
+    "gender_bias_train"
+  ],
+  "test_tasks": [
+    "gender_bias"
+  ],
+  "replicates": 20,
+  "permutation_seeds": [
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120
+  ],
+  "popper": {
+    "alpha": 0.1,
+    "max_num_of_tests": 5,
+    "max_retry": 3,
+    "time_limit": 60
+  },
+  "prompt_versions": {
+    "curator": "71f1da4229345c516c897216030065483a57d3b2ca7447e03cc8d9b41db389ff",
+    "reviewer": "becb1a88b418811c5b915a86aee9ba15213a8635021277c70190e6b0d4c9e0dd",
+    "extractor": "a5aec4d4cda3ecdd968cdef65a40fe0f8690a5af834ea7beeab21714ec66f3cf"
+  }
+}

@@ -176,3 +176,124 @@ class VllmServer:
             except subprocess.TimeoutExpired:
                 self.vllm_proc.kill()
             print("vLLM stopped.")
+
+
+BASELINE_QUANTIZATION = "awq"
+BASELINE_DTYPE = "float16"
+LARGE_GPU_GB = 70
+LARGE_CONTEXT = 16384
+SMALL_CONTEXT = 6144
+MIN_CONTEXT = SMALL_CONTEXT
+OVERHEAD_GIB = 3.0
+CONTEXT_STEP = 1024
+NO_FLAG = "none"
+DEFAULT_FALLBACK = "run popper_upgrade.sif llama-anchor instead"
+
+
+class LaunchError(ValueError):
+    pass
+
+
+def has_launch_overrides(model):
+    serving = model.get("serving") or {}
+    return any(model.get(key) is not None for key in ("quantization", "dtype", "max_model_len")) or bool(
+        serving.get("vllm_args")
+    )
+
+
+def plan_launch(model, vram_gb):
+    large = vram_gb >= LARGE_GPU_GB
+    gpu_util = 0.90 if large else 0.95
+    context = model.get("max_model_len") or (LARGE_CONTEXT if large else SMALL_CONTEXT)
+    serving = model.get("serving") or {}
+    weights = serving.get("weights_gb")
+    kv = serving.get("kv_kb_per_token")
+    if weights is not None and kv:
+        room = vram_gb * gpu_util - weights - OVERHEAD_GIB
+        fit = int(room * 1024 * 1024 // kv) // CONTEXT_STEP * CONTEXT_STEP
+        if fit < MIN_CONTEXT:
+            fallback = serving.get("fallback") or DEFAULT_FALLBACK
+            raise LaunchError(
+                f"{model['name']} needs about {weights + OVERHEAD_GIB:.0f} GB of GPU memory for its weights plus room "
+                f"for a {MIN_CONTEXT}-token context, but this GPU has {vram_gb:.0f} GB. Please {fallback}."
+            )
+        context = min(context, fit)
+    quantization = model.get("quantization") or BASELINE_QUANTIZATION
+    return {
+        "max_model_len": context,
+        "gpu_util": gpu_util,
+        "quantization": None if quantization == NO_FLAG else quantization,
+        "dtype": model.get("dtype") or BASELINE_DTYPE,
+        "args": [str(arg) for arg in serving.get("vllm_args") or []],
+    }
+
+
+def detect_vram_gb():
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10, check=False
+        )
+        return int(result.stdout.strip().splitlines()[0].strip()) / 1024
+    except Exception:
+        return 40
+
+
+class ModelVllmServer(VllmServer):
+    def __init__(self, model, port, host="localhost", proxy_port=None, launch=None, log_path=None):
+        super().__init__(model, port, host, proxy_port)
+        self.launch = launch
+        self.log_path = log_path
+
+    def command(self, plan):
+        python = os.environ.get("POPPER_VLLM_PYTHON") or sys.executable
+        cmd = [
+            python, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", self.model,
+            "--port", str(self.port),
+            "--host", self.host,
+            "--dtype", plan["dtype"],
+            "--max-model-len", str(plan["max_model_len"]),
+            "--gpu-memory-utilization", f"{plan['gpu_util']:.2f}",
+        ]
+        if plan["quantization"]:
+            cmd += ["--quantization", plan["quantization"]]
+        return cmd + ["--enforce-eager", *plan["args"]]
+
+    def _spawn(self, cmd, env):
+        if self.log_path is None:
+            return subprocess.Popen(cmd, env=env)
+        with open(self.log_path, "ab") as log:
+            return subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+
+    def start(self):
+        env = os.environ.copy()
+        env["HF_TOKEN"] = HF_TOKEN
+        env["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
+        env.pop("PYTHONPATH", None)
+        try:
+            plan = plan_launch(self.launch, detect_vram_gb())
+        except LaunchError as e:
+            print(f"ERROR: {e}")
+            return False
+        cmd = self.command(plan)
+        print(f"Starting vLLM: {' '.join(cmd)}")
+        self.vllm_proc = self._spawn(cmd, env)
+        print("Waiting for vLLM to be ready...")
+        for _ in range(600):
+            if self.vllm_proc.poll() is not None:
+                print("ERROR: vLLM process exited unexpectedly. Check output above.")
+                return False
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(2)
+                if s.connect_ex((self.host, self.port)) == 0:
+                    s.close()
+                    print("vLLM is ready!")
+                    return True
+                s.close()
+            except Exception:
+                pass
+            time.sleep(2)
+        print("ERROR: vLLM did not start within 20 minutes.")
+        return False

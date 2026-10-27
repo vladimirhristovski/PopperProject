@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from popper_upgrade.runner import PopperRunner
+from popper_upgrade.serving.logs import is_server_failure
 from popper_upgrade.skills.context import RunContext, describe_datasets
 from popper_upgrade.skills.curation import PRECEDENT_COUNT, apply_overrides, curate_before_run
 
@@ -158,8 +159,11 @@ class RunSession:
         if self._usage is None:
             return {}
         tokens_in, tokens_out = self._usage.snapshot()
+        cost = self._usage.cost_usd() if hasattr(self._usage, "cost_usd") else None
         return {
-            key: value for key, value in (("tokens_in", tokens_in), ("tokens_out", tokens_out)) if value is not None
+            key: value
+            for key, value in (("tokens_in", tokens_in), ("tokens_out", tokens_out), ("cost_usd", cost))
+            if value is not None
         }
 
     def _prompt_version(self, role, text):
@@ -278,6 +282,13 @@ class RunSession:
             for skill_id in sorted(injected):
                 self._usage_recorder(skill_id, bool(traj.res))
 
+    def _error_text(self, failure):
+        text = repr(failure)
+        if self._usage is None or not is_server_failure(text) or not hasattr(self._usage, "upstream_error"):
+            return text
+        detail = self._usage.upstream_error()
+        return f"{text} | vLLM log: {detail}" if detail else text
+
     def _control_flags(self):
         return {"control_degenerate": True} if getattr(self._source, "degenerate", False) is True else {}
 
@@ -310,7 +321,7 @@ class RunSession:
                 run_id,
                 {
                     "status": "error",
-                    "error": repr(failure),
+                    "error": self._error_text(failure),
                     "wall_time_s": time.monotonic() - started,
                     **self._tokens(),
                     **self._control_flags(),
@@ -322,7 +333,7 @@ class RunSession:
         result = {
             "status": "completed",
             "res": bool(traj.res),
-            "res_stat": float(traj.res_stat),
+            "res_stat": None if traj.res_stat is None else float(traj.res_stat),
             "n_tests": len(traj.tracked_stat),
             "parsed_result": traj.parsed_result,
             "trajectory_path": self._write_trajectory(run_id, traj),

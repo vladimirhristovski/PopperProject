@@ -92,3 +92,74 @@ def test_server_methods_match_baseline(baseline_tree, copy_tree, method, functio
 def test_default_proxy_port_follows_port():
     assert vllm_module.VllmServer("m", 8000).proxy_port == 8001
     assert vllm_module.VllmServer("m", 8000, proxy_port=9000).proxy_port == 9000
+
+
+SERVING = {"weights_gb": 60.4, "kv_kb_per_token": 192}
+
+
+def _model(**changes):
+    return {"name": "m", "served_model_id": "org/m", **changes}
+
+
+def test_plan_launch_without_settings_reproduces_the_baseline_rule():
+    big = vllm_module.plan_launch(_model(), 80.0)
+    small = vllm_module.plan_launch(_model(), 40.0)
+
+    assert (big["max_model_len"], big["gpu_util"], big["quantization"], big["dtype"]) == (16384, 0.90, "awq", "float16")
+    assert (small["max_model_len"], small["gpu_util"]) == (6144, 0.95)
+    assert big["args"] == []
+
+
+def test_plan_launch_none_omits_quantization_and_keeps_extra_args():
+    plan = vllm_module.plan_launch(
+        _model(quantization="none", dtype="bfloat16", serving={"vllm_args": ["--trust-remote-code"]}), 80.0
+    )
+
+    assert (plan["quantization"], plan["dtype"], plan["args"]) == (None, "bfloat16", ["--trust-remote-code"])
+
+
+def test_plan_launch_shrinks_the_context_to_what_fits():
+    plan = vllm_module.plan_launch(_model(serving=SERVING), 80.0)
+    tight = vllm_module.plan_launch(_model(serving={"weights_gb": 67.0, "kv_kb_per_token": 192}), 80.0)
+
+    assert plan["max_model_len"] == 16384
+    assert 6144 <= tight["max_model_len"] < 16384
+    assert tight["max_model_len"] % 1024 == 0
+
+
+def test_plan_launch_refuses_when_nothing_fits_and_names_the_fallback():
+    model = _model(serving={"weights_gb": 75.0, "kv_kb_per_token": 192, "fallback": "run the FP8 job"})
+
+    with pytest.raises(vllm_module.LaunchError, match="80 GB.*run the FP8 job") as info:
+        vllm_module.plan_launch(model, 80.0)
+
+    assert "m needs about" in str(info.value)
+    with pytest.raises(vllm_module.LaunchError, match="llama-anchor"):
+        vllm_module.plan_launch(_model(serving=SERVING), 40.0)
+
+
+def test_launch_overrides_are_detected():
+    assert not vllm_module.has_launch_overrides(_model(serving={"weights_gb": 1, "kv_kb_per_token": 1}))
+    assert vllm_module.has_launch_overrides(_model(dtype="bfloat16"))
+    assert vllm_module.has_launch_overrides(_model(serving={"vllm_args": ["--x"]}))
+
+
+def test_command_uses_the_image_python_and_omits_quantization_when_none(monkeypatch):
+    monkeypatch.setenv("POPPER_VLLM_PYTHON", "/usr/bin/vllm-python")
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(quantization="none", dtype="bfloat16"))
+
+    command = server.command(vllm_module.plan_launch(server.launch, 80.0))
+
+    assert command[:3] == ["/usr/bin/vllm-python", "-m", "vllm.entrypoints.openai.api_server"]
+    assert "--quantization" not in command
+    assert command[command.index("--dtype") + 1] == "bfloat16"
+    assert command[command.index("--max-model-len") + 1] == "16384"
+    assert command[-1] == "--enforce-eager"
+
+
+def test_launch_server_does_not_start_when_memory_cannot_fit(monkeypatch):
+    monkeypatch.setattr(vllm_module, "detect_vram_gb", lambda: 24.0)
+    monkeypatch.setattr(vllm_module.subprocess, "Popen", lambda *a, **k: pytest.fail("must not launch"))
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(serving=SERVING))
+
+    assert server.start() is False

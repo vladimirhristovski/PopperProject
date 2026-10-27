@@ -134,7 +134,7 @@ def test_vllm_start_failure_returns_1_and_stops_proxy(env):
     code = common.run_model(VLLM_MODEL["name"], env.snapshot, env.bundle)
 
     assert code == 1
-    assert env.server.instances[0].calls == ["start", "stop_proxy", "stop"]
+    assert env.server.instances[0].calls == ["start", "stop", "stop_proxy"]
     assert _rows(env.bundle) == {}
     assert env.popper.validations == []
 
@@ -151,7 +151,7 @@ def test_runs_every_hypothesis_for_every_arm(env):
     assert {row["library_snapshot_id"] for row in rows.values()} == {"snap-1"}
     assert {row["human_review"] for row in rows.values()} == {False}
     assert Counter(row["hypothesis"] for row in rows.values()) == dict.fromkeys([h["text"] for h in HYPOTHESES], 3)
-    assert env.server.instances[0].calls == ["start", "start_proxy", "stop_proxy", "stop"]
+    assert env.server.instances[0].calls == ["start", "start_proxy", "stop", "stop_proxy"]
 
 
 def test_serving_environment_matches_test3_local(env):
@@ -207,7 +207,7 @@ def test_sigterm_marks_current_run_error_and_stops_servers(env):
     rows = list(_rows(env.bundle).values())
     assert [row["status"] for row in rows] == ["completed", "error"]
     assert "received signal" in rows[1]["error"]
-    assert env.server.instances[0].calls[-2:] == ["stop_proxy", "stop"]
+    assert env.server.instances[0].calls[-2:] == ["stop", "stop_proxy"]
     assert len(env.popper.validations) == 2
     assert signal.getsignal(signal.SIGTERM) is previous
 

@@ -39,6 +39,16 @@ def test_user_cannot_change_library_over_the_api(live_app):
     assert admin.predict(live_app.skills["approved"], api_name="/skill_detail")["status"] == "approved"
 
 
+def test_single_test_run_detail_charts_its_point(live_app):
+    client = Client(live_app.url, auth=("alice", USER_PW), verbose=False)
+    chart = client.predict(live_app.single_run_id, api_name="/run_detail")[3]
+    points = [row for row in chart["data"] if row[2] == "e-value"]
+    assert chart["mark"] == "point"
+    assert [(row[0], round(row[1], 3)) for row in points] == [(1.0, 2.887)]
+    assert {row[1] for row in chart["data"] if row[2] == "threshold"} == {10.0}
+    assert len(chart["data"]) > 2
+
+
 def test_run_detail_api(live_app):
     client = Client(live_app.url, auth=("alice", USER_PW), verbose=False)
     run, skills, reviews, chart, designer, *_ = client.predict(live_app.run_id, api_name="/run_detail")

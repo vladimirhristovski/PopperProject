@@ -12,10 +12,12 @@ From: popper_llama.sif
     data/winobias.csv /opt/popper/data/winobias.csv
     data/bbq.csv /opt/popper/data/bbq.csv
     data/stereoset.csv /opt/popper/data/stereoset.csv
+    data/benchmark/discoverybench /opt/popper/data/benchmark/discoverybench
 
 %post
     rm -rf /opt/popper/popper_upgrade/app
     mkdir -p /opt/popper/data/bio_database
+    find /opt/popper/cluster/jobs -mindepth 1 -maxdepth 1 ! -name llama-anchor -exec rm -rf {} +
     pip3 freeze > /tmp/base.txt
     pip3 install sentence-transformers==3.3.1 -c /tmp/base.txt
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st

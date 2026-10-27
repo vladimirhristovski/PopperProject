@@ -3,35 +3,71 @@ import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from popper_upgrade.serving.pricing import cost_usd, usage_parts
+
 LOCAL_HOST = "127.0.0.1"
 
 
 class UsageCounter:
-    def __init__(self):
+    def __init__(self, pricing=None):
         self._lock = threading.Lock()
         self._prompt = None
         self._completion = None
+        self._cache_read = None
+        self._cache_write = None
+        self._cost = None
+        self._total_cost = 0.0
+        self.pricing = pricing
         self.port = None
+        self.error_log = None
 
     def add(self, usage):
         if not isinstance(usage, dict):
             return
         prompt = usage.get("prompt_tokens")
         completion = usage.get("completion_tokens")
+        parts = usage_parts(usage)
+        call_cost = cost_usd(parts, self.pricing)
         with self._lock:
             if isinstance(prompt, int):
                 self._prompt = (self._prompt or 0) + prompt
             if isinstance(completion, int):
                 self._completion = (self._completion or 0) + completion
+            if parts is not None:
+                self._cache_read = (self._cache_read or 0) + parts["cache_read"]
+                self._cache_write = (self._cache_write or 0) + parts["cache_write"]
+            if call_cost is not None:
+                self._cost = (self._cost or 0.0) + call_cost
+                self._total_cost += call_cost
 
     def snapshot(self):
         with self._lock:
             return self._prompt, self._completion
 
+    def cache_snapshot(self):
+        with self._lock:
+            return self._cache_read, self._cache_write
+
+    def cost_usd(self):
+        with self._lock:
+            return self._cost
+
+    def total_cost_usd(self):
+        with self._lock:
+            return self._total_cost
+
     def reset(self):
         with self._lock:
             self._prompt = None
             self._completion = None
+            self._cache_read = None
+            self._cache_write = None
+            self._cost = None
+        if self.error_log is not None:
+            self.error_log.mark()
+
+    def upstream_error(self):
+        return self.error_log.last() if self.error_log is not None else None
 
 
 def read_usage(body):
@@ -103,10 +139,13 @@ class RelayProxy:
         self._server = None
         self._thread = None
 
-    def start(self):
-        handler = _make_handler(
+    def _build_handler(self):
+        return _make_handler(
             self._upstream, self.counter, self._rewrite_request, self._rewrite_response, self._headers
         )
+
+    def start(self):
+        handler = self._build_handler()
         self._server = HTTPServer((LOCAL_HOST, self.port), handler)
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)

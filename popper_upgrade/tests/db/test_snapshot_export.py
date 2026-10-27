@@ -70,7 +70,20 @@ def test_export_records_snapshot_row_and_registry(db, tmp_path):
     assert row["skill_ids"] == [kept]
     assert row["embedding_model"] == "fake-embedder"
     assert [d["skill_id"] for d in payload["decisions"]] == [kept]
-    assert len(payload["models"]) == 6
+    assert len(payload["models"]) == len(json.loads((SEED_DIR / "models.json").read_text(encoding="utf-8")))
     assert len(payload["hypothesis_sets"]["gender_v1"]) == 5
     assert {d["name"] for d in payload["datasets"]} == {"winobias", "bbq", "stereoset"}
     assert SnapshotSkillSource(path, embedder).registry["datasets"][0]["permutable_columns"]
+
+
+def test_export_carries_launch_settings_of_models(db, tmp_path):
+    RegistryRepository(db).seed_from(SEED_DIR)
+    path = tmp_path / "snapshot.json"
+
+    export_snapshot(db, path)
+    models = {row["name"]: row for row in json.loads(path.read_text(encoding="utf-8"))["models"]}
+
+    assert models["Qwen/Qwen3.5-9B"]["request_overrides"]["set"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert models["Qwen/Qwen3.5-9B"]["dtype"] == "bfloat16"
+    assert models["casperhansen/llama-3.3-70b-instruct-awq"]["dtype"] is None
+    assert models["gpt-6-luna"]["request_overrides"]["set"] == {"model": "gpt-6-luna"}

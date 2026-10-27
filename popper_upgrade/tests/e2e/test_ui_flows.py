@@ -85,10 +85,70 @@ def test_run_detail_renders_chart_and_logs(page, live_app):
     expect(page.get_by_text("round 1 attempt 1: approved - looks fine")).to_be_visible()
 
 
+def _load_run(page, live_app, run_id):
+    _login(page, live_app, "alice", USER_PW)
+    page.get_by_role("tab", name="Run detail").click()
+    page.get_by_label("Run ID").fill(run_id)
+    page.get_by_role("button", name="Load run").click()
+
+
+MARK_CLUSTERS = """canvas => {
+  const { width, height } = canvas;
+  const data = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const channels = [data[i], data[i + 1], data[i + 2]];
+      const spread = Math.max(...channels) - Math.min(...channels);
+      if (data[i + 3] > 60 && spread > 25) {
+        rows.push(y);
+        break;
+      }
+    }
+  }
+  return rows.reduce((groups, y, index) => groups + (index === 0 || y - rows[index - 1] > 6 ? 1 : 0), 0);
+}"""
+
+
+NOT_CLIPPED = """table => {
+  for (let el = table.parentElement; el; el = el.parentElement) {
+    const overflow = getComputedStyle(el).overflowX;
+    if ((overflow === "auto" || overflow === "scroll") && el.scrollWidth > el.clientWidth + 1) return false;
+  }
+  return table.getBoundingClientRect().width <= table.closest("#runs_table").getBoundingClientRect().width + 1;
+}"""
+
+
+def test_single_test_run_shows_its_evalue_point_and_threshold(page, live_app):
+    _load_run(page, live_app, live_app.single_run_id)
+    canvas = page.locator("#evalue_chart canvas").first
+    expect(canvas).to_be_visible()
+    page.wait_for_timeout(1000)
+    assert canvas.evaluate(MARK_CLUSTERS) >= 3
+
+
+def test_runs_table_fits_the_key_columns_without_scrolling(page, live_app):
+    _login(page, live_app, "alice", USER_PW)
+    page.get_by_role("tab", name="Runs").click()
+    table = page.locator("#runs_table")
+    expect(table.get_by_text("claude-sonnet-4-5").first).to_be_visible()
+    frame = table.bounding_box()
+    for name in ("status", "arm", "model_name", "res_stat"):
+        header = table.get_by_role("columnheader", name=name).first
+        expect(header).to_be_visible()
+        box = header.bounding_box()
+        assert box["x"] >= frame["x"]
+        assert box["x"] + box["width"] <= frame["x"] + frame["width"]
+    assert table.locator("table.table").evaluate(NOT_CLIPPED)
+
+
 def test_curation_override_flow(page, live_app):
     _login(page, live_app, "alice", USER_PW)
     page.get_by_role("tab", name="Curation").click()
     expect(page.locator("#curation_hypotheses input:checked")).to_have_count(5)
+    page.locator("#curation_model input").click()
+    page.get_by_role("option", name="claude-sonnet-4-5").click()
     page.get_by_role("button", name="Run curator").click()
     expect(page.locator("#curation_token").get_by_role("textbox")).to_have_value(re.compile(r".+"))
     flips = page.locator("#curation_flips")

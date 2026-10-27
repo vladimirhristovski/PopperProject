@@ -30,6 +30,7 @@ class LiveApp:
     ctx: AppContext
     skills: dict
     run_id: str
+    single_run_id: str
 
 
 def _skill(applicability):
@@ -86,7 +87,13 @@ def _seed(ctx):
             ],
         )
         runs.finish_run(run_id, {"res": False, "res_stat": 1.5, "n_tests": 2, "trajectory_path": str(path)})
-    return ids, run_id
+        single_id = runs.create_run(run_config(model_name="claude-sonnet-4-5", hypothesis="single test run"))
+        single_path = ctx.trajectory_dir / f"{single_id}.json"
+        single_path.write_text(
+            json.dumps({**trajectory, "tracked_tests": ["t1"], "tracked_stat": [0.03]}), encoding="utf-8"
+        )
+        runs.finish_run(single_id, {"res": False, "res_stat": 3.0, "n_tests": 1, "trajectory_path": str(single_path)})
+    return ids, run_id, single_id
 
 
 @pytest.fixture(scope="module")
@@ -112,7 +119,7 @@ def live_app(e2e_dsn, tmp_path_factory):
         curator_factory=lambda name: FakeCurator(),
         default_curator_model="claude-sonnet-4-5",
     )
-    ids, run_id = _seed(ctx)
+    ids, run_id, single_run_id = _seed(ctx)
     demo = build_app(ctx)
     _, url, _ = demo.queue().launch(
         server_name="127.0.0.1",
@@ -122,5 +129,5 @@ def live_app(e2e_dsn, tmp_path_factory):
         auth=credentials_check(ctx),
         quiet=True,
     )
-    yield LiveApp(url.rstrip("/"), ctx, ids, run_id)
+    yield LiveApp(url.rstrip("/"), ctx, ids, run_id, single_run_id)
     demo.close()

@@ -66,6 +66,42 @@ def test_per_task_limit(benchmark):
     assert {example["task"] for example in examples} == {"alpha", "beta"}
 
 
+def _counts(examples):
+    counts = {}
+    for example in examples:
+        if not example["permuted"]:
+            counts[example["task"]] = counts.get(example["task"], 0) + 1
+    return counts
+
+
+def test_sample_is_stratified_capped_by_availability_and_seeded(benchmark):
+    tasks = {"alpha", "beta", "gamma"}
+
+    five = discoverybench_examples(str(benchmark), tasks, sample={"originals": 5, "seed": 7})
+    four = discoverybench_examples(str(benchmark), tasks, sample={"originals": 4, "seed": 7})
+    again = discoverybench_examples(str(benchmark), tasks, sample={"originals": 4, "seed": 7})
+    everything = discoverybench_examples(str(benchmark), tasks, sample={"originals": 99, "seed": 7})
+
+    assert _counts(five) == {"alpha": 2, "beta": 2, "gamma": 1}
+    assert sum(_counts(four).values()) == 4
+    assert set(_counts(four)) == tasks
+    assert [e["hypothesis"] for e in four] == [e["hypothesis"] for e in again]
+    assert len(everything) == len(discoverybench_examples(str(benchmark), tasks))
+    assert sum(e["permuted"] for e in four) == sum(not e["permuted"] for e in four) == 4
+
+
+def test_sampling_seed_changes_the_choice(benchmark):
+    choices = {
+        tuple(
+            e["hypothesis"]
+            for e in discoverybench_examples(str(benchmark), {"alpha"}, sample={"originals": 1, "seed": seed})
+        )
+        for seed in range(12)
+    }
+
+    assert len(choices) > 1
+
+
 def test_factories_permute_only_with_a_seed_and_deterministically(benchmark):
     examples = discoverybench_examples(str(benchmark), {"alpha"})
     original = next(e for e in examples if not e["permuted"])

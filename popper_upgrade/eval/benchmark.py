@@ -1,5 +1,6 @@
 import functools
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -23,14 +24,39 @@ def discovery_factory(task_path, metadata_path, seed):
     return build
 
 
-def discoverybench_examples(path, tasks, per_task=None):
+def _entry_key(entry):
+    return (entry["task"], entry["metadataid"], entry["query_id"])
+
+
+def stratified_sample(entries, total, seed):
+    by_task = {}
+    for entry in entries:
+        by_task.setdefault(entry["task"], []).append(entry)
+    rng = random.Random(seed)
+    quotas = dict.fromkeys(by_task, 0)
+    open_tasks = sorted(by_task)
+    remaining = min(total, len(entries))
+    while remaining and open_tasks:
+        share, extra = divmod(remaining, len(open_tasks))
+        bonus = set(rng.sample(open_tasks, extra))
+        remaining = 0
+        for task in open_tasks:
+            want = share + (task in bonus)
+            take = min(want, len(by_task[task]) - quotas[task])
+            quotas[task] += take
+            remaining += want - take
+        open_tasks = [task for task in open_tasks if quotas[task] < len(by_task[task])]
+    chosen = []
+    for task in sorted(by_task):
+        chosen += rng.sample(sorted(by_task[task], key=_entry_key), quotas[task])
+    return sorted(chosen, key=_entry_key)
+
+
+def discoverybench_examples(path, tasks, per_task=None, sample=None):
     benchmark = discovery_bench_hypothesis(path=path, num_samples=sys.maxsize)
     root = Path(benchmark.data_path)
-    originals = sorted(
-        (e for e in benchmark.examples if e["answer"] is True and e["task"] in tasks),
-        key=lambda e: (e["task"], e["metadataid"], e["query_id"]),
-    )
-    examples = []
+    originals = sorted((e for e in benchmark.examples if e["answer"] is True and e["task"] in tasks), key=_entry_key)
+    selected = []
     seen = set()
     taken = {}
     for entry in originals:
@@ -39,6 +65,11 @@ def discoverybench_examples(path, tasks, per_task=None):
             continue
         seen.add(key)
         taken[entry["task"]] = taken.get(entry["task"], 0) + 1
+        selected.append(entry)
+    if sample is not None:
+        selected = stratified_sample(selected, int(sample["originals"]), sample["seed"])
+    examples = []
+    for entry in selected:
         task_path = root / entry["task"]
         metadata_path = task_path / f"metadata_{entry['metadataid']}.json"
         factory = functools.partial(discovery_factory, str(task_path), str(metadata_path))

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from popper_upgrade.db.bundle import BundleSink
 from popper_upgrade.db.snapshot import SnapshotSkillSource
+from popper_upgrade.eval.learning import bundle_learning, open_library
 from popper_upgrade.eval.run_experiment import run_experiment
 from popper_upgrade.models import ServingError, check_environment, serving_for
 from popper_upgrade.run import run_hypotheses
@@ -144,16 +145,40 @@ def run_model(model_name, snapshot_path, bundle_dir, arms=ARMS):
     return _exit_code(guard)
 
 
-def run_experiment_job(spec_path, model_name, snapshot_path, bundle_dir, tasks=None, replicates=None, per_task=None):
+def run_experiment_job(
+    spec_path,
+    model_name,
+    snapshot_path,
+    bundle_dir,
+    tasks=None,
+    replicates=None,
+    per_task=None,
+    budget=None,
+    library_from=None,
+    log_dir=None,
+):
     try:
         config = _load_config()
-        snapshot = SnapshotSkillSource(snapshot_path, Embedder())
+        embedder = Embedder()
+        snapshot = SnapshotSkillSource(snapshot_path, embedder)
     except SetupError as e:
         print(f"ERROR: {e}")
         return 1
 
     bundle_dir = Path(bundle_dir)
-    sink = BundleSink(bundle_dir, snapshot)
+    frozen = None
+    if library_from is not None:
+        try:
+            frozen = SnapshotSkillSource(library_from, embedder)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"ERROR: {e}")
+            return 1
+        learning = None
+        sink = BundleSink(bundle_dir, frozen)
+    else:
+        library = open_library(snapshot_path, bundle_dir, embedder)
+        sink = BundleSink(bundle_dir, library)
+        learning = bundle_learning(snapshot_path, bundle_dir, embedder, library, sink)
     with _signals() as guard:
         try:
             guard.active = True
@@ -170,6 +195,10 @@ def run_experiment_job(spec_path, model_name, snapshot_path, bundle_dir, tasks=N
                 trajectory_dir=bundle_dir / "trajectories",
                 stop_requested=lambda: guard.signum is not None,
                 on_serving=_export_serving_environment,
+                learning=learning,
+                budget=budget,
+                library=frozen,
+                log_dir=log_dir,
             )
         except (ValueError, KeyError, ServingError) as e:
             print(f"ERROR: {e}")

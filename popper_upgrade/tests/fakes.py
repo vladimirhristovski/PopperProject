@@ -341,7 +341,9 @@ def patch_agent_classes(monkeypatch, module):
 JOB_DATASETS = [{"name": "bbq", "permutable_columns": ["question"]}]
 
 
-def write_job(directory, name="demo", model=None, hypotheses=None, arms=("baseline",), replicates=2, **model_extra):
+def write_job(
+    directory, name="demo", model=None, hypotheses=None, arms=("baseline",), replicates=2, train=None, **model_extra
+):
     from popper_upgrade.eval.run_experiment import current_prompt_hashes
 
     model = {**(model or VLLM_MODEL), **model_extra}
@@ -365,6 +367,9 @@ def write_job(directory, name="demo", model=None, hypotheses=None, arms=("baseli
         "permutation_seeds": list(range(5, 5 + replicates)),
         "prompt_versions": current_prompt_hashes(),
     }
+    if train:
+        spec["source"] = {**spec["source"], "train_task": "gender_bias_train", "train_hypotheses": list(train)}
+        spec["train_tasks"] = ["gender_bias_train"]
     (directory / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
     job = {
         "name": name,

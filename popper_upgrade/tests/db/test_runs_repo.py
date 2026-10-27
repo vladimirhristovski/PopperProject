@@ -143,3 +143,28 @@ def test_entry_decision_sets_library_flag_and_pre_run_does_not(db):
 
     repo.add_skill_decision(_decision(skill_id, "pre_run", "reject", run_id))
     assert skills.get(skill_id).approved is True
+
+
+def test_run_cost_is_stored_and_listed_per_model(db):
+    repo = make_repo(db)
+    first = repo.create_run({**run_config(), "model_name": "paid-model"})
+    second = repo.create_run({**run_config(), "model_name": "paid-model"})
+    other = repo.create_run({**run_config(), "model_name": "other-model"})
+    repo.create_run({**run_config(), "model_name": "paid-model"})
+    repo.finish_run(first, {"tokens_in": 10, "cost_usd": 0.25})
+    repo.finish_run(second, {"status": "error", "cost_usd": 0.5})
+    repo.finish_run(other, {"cost_usd": 9.0})
+
+    assert repo.get_run(first)["cost_usd"] == 0.25
+    assert sorted(repo.model_costs("paid-model")) == [("completed", 0.25), ("error", 0.5)]
+    assert repo.model_costs("never-ran") == []
+
+
+def test_run_cost_must_not_be_negative(db):
+    import psycopg
+
+    repo = make_repo(db)
+    run_id = repo.create_run(run_config())
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        repo.finish_run(run_id, {"cost_usd": -1.0})

@@ -103,3 +103,26 @@ def test_build_refuses_a_laptop_model(db, registry, tmp_path):
         build_job(db, "demo", "llama3.1:8b", spec, tmp_path / "out", _embedder(), data_dir=tmp_path)
 
     assert not (tmp_path / "out" / "job.json").exists()
+
+
+def test_qwen_large_job_builds_from_the_qwen_round_spec(db, registry, tmp_path):
+    out = tmp_path / "jobs" / "qwen-large"
+    spec = REGISTRY_DIR.parent / "eval" / "specs" / "qwen_round.json"
+
+    job = build_job(db, "qwen-large", "qwen-large", spec, out, _embedder(), data_dir=tmp_path)
+
+    assert {key: job[key] for key in ("name", "model", "spec", "snapshot")} == {
+        "name": "qwen-large",
+        "model": "qwen-large",
+        "spec": "spec.json",
+        "snapshot": "snapshot.json",
+    }
+    assert "library_from" not in job
+    snapshot = json.loads((out / "snapshot.json").read_text(encoding="utf-8"))
+    model = next(m for m in snapshot["models"] if m["name"] == "qwen-large")
+    expected = next(
+        m for m in json.loads((REGISTRY_DIR / "models.json").read_text(encoding="utf-8")) if m["name"] == "qwen-large"
+    )
+    for field in ("served_model_id", "quantization", "dtype", "max_model_len", "serving", "request_overrides"):
+        assert model[field] == expected[field]
+    assert json.loads((out / "spec.json").read_text(encoding="utf-8"))["name"] == "qwen_round"

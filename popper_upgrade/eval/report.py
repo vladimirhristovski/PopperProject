@@ -2,12 +2,14 @@ import argparse
 import csv
 import json
 import sys
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 from popper_upgrade.eval import metrics
 
 RATE_METRICS = ("type1", "power", "accuracy", "error_rate")
+LEARN_PHASE = "learn"
 
 
 def _fetch_runs(conn, experiment_id):
@@ -56,15 +58,23 @@ def _assemble(experiment, runs, reviews, run_skills, decisions, references):
     groups = defaultdict(list)
     for run in runs:
         groups[(run["model_name"], run["arm"])].append(run)
+    planned = experiment["spec"].get("planned_runs") or {}
+    for model in {model for model, _ in groups}:
+        for arm in planned:
+            groups.setdefault((model, arm), [])
     rows = []
     for (model, arm), group in sorted(groups.items()):
         ids = {run["id"] for run in group}
+        n_completed = len(metrics.completed(group))
+        n_planned = planned.get(arm)
         rows.append(
             {
                 "model": model,
                 "arm": arm,
                 "n_runs": len(group),
-                "n_completed": len(metrics.completed(group)),
+                "n_completed": n_completed,
+                "n_planned": n_planned,
+                "completeness": n_completed / n_planned if n_planned else None,
                 "type1": metrics.type1(group),
                 "power": metrics.power(group),
                 "accuracy": metrics.accuracy(group),
@@ -84,6 +94,49 @@ def _assemble(experiment, runs, reviews, run_skills, decisions, references):
         "git_shas": sorted({run["git_sha"] for run in runs if run.get("git_sha")}),
         "prompt_hashes": experiment["spec"].get("prompt_versions", {}),
         "rows": rows,
+        "learning": None,
+    }
+
+
+def _db_learning(conn, experiment, runs):
+    learn_id = experiment["spec"].get("learn_experiment_id")
+    if not learn_id:
+        return None
+    learn = conn.execute("select spec from runs.experiments where id = %s", (learn_id,)).fetchone()
+    learn_runs = conn.execute(
+        "select id::text as id, status from runs.runs where experiment_id = %s", (learn_id,)
+    ).fetchall()
+    ids = [run["id"] for run in learn_runs]
+    candidates = conn.execute(
+        "select approved from skills.skills where source_run_id::text = any(%s::text[])", (ids,)
+    ).fetchall()
+    snapshot_ids = sorted({str(run["library_snapshot_id"]) for run in runs if run.get("library_snapshot_id")})
+    snapshot = (
+        conn.execute(
+            "select id::text as id, content_hash, skill_ids from registry.library_snapshots "
+            "where id::text = any(%s::text[])",
+            (snapshot_ids,),
+        ).fetchone()
+        if snapshot_ids
+        else None
+    )
+    approved_total = conn.execute(
+        "select count(*) as n from skills.skills where approved is true and id::text = any(%s::text[])",
+        (list(snapshot["skill_ids"]) if snapshot else [],),
+    ).fetchone()["n"]
+    learned = sum(1 for row in candidates if row["approved"] is True)
+    return {
+        "experiment_id": learn_id,
+        "n_planned": sum(((learn or {}).get("spec") or {}).get("planned_runs", {}).values()) or None,
+        "n_runs": len(learn_runs),
+        "n_completed": sum(1 for run in learn_runs if run["status"] == "completed"),
+        "n_errors": sum(1 for run in learn_runs if run["status"] == "error"),
+        "candidates": len(candidates),
+        "learned_skills": learned,
+        "approved_skills": approved_total,
+        "empty_library": approved_total == 0,
+        "frozen_snapshot_id": snapshot["id"] if snapshot else None,
+        "content_hash": snapshot["content_hash"] if snapshot else None,
     }
 
 
@@ -95,7 +148,7 @@ def build_report(conn, experiment_id):
         raise KeyError(experiment_id)
     runs = _fetch_runs(conn, experiment_id)
     run_ids = [run["id"] for run in runs]
-    return _assemble(
+    report = _assemble(
         experiment,
         runs,
         _fetch_reviews(conn, run_ids),
@@ -103,6 +156,8 @@ def build_report(conn, experiment_id):
         _fetch_curator_decisions(conn, run_ids),
         _fetch_references(conn),
     )
+    report["learning"] = _db_learning(conn, experiment, runs)
+    return report
 
 
 def _read_jsonl(path):
@@ -112,11 +167,36 @@ def _read_jsonl(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _bundle_learning(directory, experiments, merged_runs):
+    learn = next((row for row in experiments if row["spec"].get("phase") == LEARN_PHASE), None)
+    if learn is None:
+        return None
+    runs = [run for run in merged_runs.values() if run.get("experiment_id") == learn["id"]]
+    info_path = Path(directory) / "freeze.json"
+    info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
+    return {
+        "experiment_id": learn["id"],
+        "n_planned": sum((learn.get("spec") or {}).get("planned_runs", {}).values()) or None,
+        "n_runs": len(runs),
+        "n_completed": sum(1 for run in runs if run.get("status") == "completed"),
+        "n_errors": sum(1 for run in runs if run.get("status") == "error"),
+        "candidates": info.get("candidates"),
+        "learned_skills": info.get("learned_skills"),
+        "approved_skills": info.get("approved_skills"),
+        "empty_library": info.get("empty_library", False),
+        "frozen_snapshot_id": info.get("snapshot_id"),
+        "content_hash": info.get("content_hash"),
+    }
+
+
 def report_from_bundle(directory, experiment_id=None, references=()):
     directory = Path(directory)
-    experiments = _read_jsonl(directory / "experiments.jsonl")
+    all_experiments = _read_jsonl(directory / "experiments.jsonl")
+    experiments = all_experiments
     if experiment_id is not None:
         experiments = [row for row in experiments if row["id"] == experiment_id]
+    else:
+        experiments = [row for row in experiments if row["spec"].get("phase") != LEARN_PHASE] or experiments
     if not experiments:
         raise KeyError(experiment_id)
     row = experiments[0]
@@ -136,7 +216,17 @@ def report_from_bundle(directory, experiment_id=None, references=()):
         for row in _read_jsonl(directory / "skill_decisions.jsonl")
         if row.get("run_id") in by_id and row.get("trigger") == "pre_run" and row.get("decider") == "curator"
     ]
-    return _assemble(experiment, runs, reviews, run_skills, decisions, list(references))
+    report = _assemble(experiment, runs, reviews, run_skills, decisions, list(references))
+    report["learning"] = _bundle_learning(directory, all_experiments, merged)
+    return report
+
+
+def report_from_parts(paths, experiment_id=None, references=()):
+    from popper_upgrade.db.bundle import merge_parts
+
+    with tempfile.TemporaryDirectory() as scratch:
+        merge_parts(paths, scratch)
+        return report_from_bundle(scratch, experiment_id, references)
 
 
 def _flatten(prefix, value, out):
@@ -178,17 +268,37 @@ def _label(row):
     return f"{row['arm']} (control_degenerate)" if row["control_degenerate"] else row["arm"]
 
 
+def _render_learning(learning):
+    if learning is None:
+        return ""
+    lines = [
+        "## Learning phase (before the library was frozen)",
+        "",
+        f"- learning runs: {learning['n_runs']} ({learning['n_completed']} completed, {learning['n_errors']} errors)"
+        + (f", {learning['n_planned']} planned" if learning.get("n_planned") else ""),
+        f"- candidate skills proposed: {learning['candidates']}",
+        f"- new skills approved: {learning['learned_skills']}",
+        f"- approved skills in the frozen library: {learning['approved_skills']}",
+        f"- frozen library snapshot: `{learning['frozen_snapshot_id']}` (content hash `{learning['content_hash']}`)",
+    ]
+    if learning["empty_library"]:
+        lines.append("- **empty_library**: nothing was approved, so the skill arms below ran without any skills")
+    return "\n".join(lines) + "\n\n"
+
+
 def render_markdown(report):
     experiment = report["experiment"]
     rows = report["rows"]
     outcomes = _table(
-        ["model", "arm", "runs", "completed", "error rate", "Type-I", "power", "accuracy"],
+        ["model", "arm", "runs", "completed", "planned", "complete", "error rate", "Type-I", "power", "accuracy"],
         [
             [
                 row["model"],
                 _label(row),
                 str(row["n_runs"]),
                 str(row["n_completed"]),
+                "-" if row["n_planned"] is None else str(row["n_planned"]),
+                "-" if row["completeness"] is None else f"{row['completeness']:.0%}",
                 _fmt_rate(row["error_rate"]),
                 _fmt_rate(row["type1"]),
                 _fmt_rate(row["power"]),
@@ -233,13 +343,14 @@ def render_markdown(report):
         ],
     )
     spec = json.dumps(experiment["spec"], indent=2, sort_keys=True)
+    learning = _render_learning(report.get("learning"))
     prompts = "\n".join(f"- {role}: `{digest}`" for role, digest in sorted(report["prompt_hashes"].items()))
     return (
         f"# {experiment['name']}\n\n"
         f"- experiment id: `{experiment['id']}`\n"
         f"- library snapshot id: {', '.join(f'`{i}`' for i in report['snapshot_ids']) or '-'}\n"
         f"- git SHA: {', '.join(f'`{i}`' for i in report['git_shas']) or '-'}\n\n"
-        f"## Outcomes\n\n{outcomes}\n\n## Cost\n\n{costs}\n\n## Skills, reviewer and curator\n\n{skills}\n\n"
+        f"{learning}## Outcomes\n\n{outcomes}\n\n## Cost\n\n{costs}\n\n## Skills, reviewer and curator\n\n{skills}\n\n"
         f"## Prompt hashes\n\n{prompts}\n\n## Experiment spec\n\n```json\n{spec}\n```\n"
     )
 
@@ -256,7 +367,20 @@ def write_report(report, out_dir):
     (out_dir / "summary.md").write_text(render_markdown(report), encoding="utf-8")
 
 
+def _parts_main(argv):
+    parser = argparse.ArgumentParser(prog="python -m popper_upgrade.eval.report parts")
+    parser.add_argument("out_dir")
+    parser.add_argument("paths", nargs="+")
+    args = parser.parse_args(argv)
+    write_report(report_from_parts(args.paths), args.out_dir)
+    print(Path(args.out_dir) / "summary.md")
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "parts":
+        return _parts_main(argv[1:])
     parser = argparse.ArgumentParser(prog="python -m popper_upgrade.eval.report")
     parser.add_argument("experiment_id")
     parser.add_argument("out_dir")

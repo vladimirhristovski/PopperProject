@@ -23,17 +23,22 @@ def test_seed_is_idempotent(db):
     second = {t: _count(db, t) for t in first}
 
     assert first == second
-    assert first == {"registry.models": 6, "registry.hypotheses": 5, "registry.datasets": 3}
+    total = len(json.loads((SEED_DIR / "models.json").read_text(encoding="utf-8")))
+    assert first == {"registry.models": total, "registry.hypotheses": 5, "registry.datasets": 3}
 
 
 def test_seeded_lookups(db):
     registry = RegistryRepository(db)
     registry.seed_from(SEED_DIR)
 
-    assert {m["name"] for m in registry.models("cluster")} == {
-        "casperhansen/llama-3.3-70b-instruct-awq",
-        "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    cluster = {m["name"] for m in registry.models("cluster")}
+    assert {"casperhansen/llama-3.3-70b-instruct-awq", "Qwen/Qwen2.5-72B-Instruct-AWQ"} <= cluster
+    assert {m["backend"] for m in registry.models("cluster")} == {"vllm"}
+    assert registry.model("Qwen/Qwen3.5-9B")["request_overrides"] == {
+        "set": {"chat_template_kwargs": {"enable_thinking": False}}
     }
+    assert registry.model("gpt-6-luna")["request_overrides"]["set"] == {"model": "gpt-6-luna"}
+    assert registry.model("casperhansen/llama-3.3-70b-instruct-awq")["quantization"] is None
     assert registry.model("gpt-4o")["backend"] == "openai"
     assert len(registry.hypothesis_set("gender_v1")) == 5
     assert registry.dataset("winobias")["permutable_columns"] == ["subset"]
@@ -41,6 +46,21 @@ def test_seeded_lookups(db):
     assert registry.dataset("stereoset")["permutable_columns"] == ["label"]
     with pytest.raises(KeyError):
         registry.model("missing")
+
+
+def test_paid_models_round_trip_pricing_budget_and_the_native_backend(db):
+    registry = RegistryRepository(db)
+    registry.seed_from(SEED_DIR)
+
+    sonnet = registry.model("claude-sonnet-5-5")
+    sol = registry.model("gpt-6-sol")
+
+    assert sonnet["backend"] == "anthropic_messages"
+    assert sonnet["pricing"] == {"input": 2, "cache_read": 0.1, "cache_write": 2.5, "output": 10}
+    assert sonnet["request_overrides"]["set"]["thinking"] == {"type": "between_tools"}
+    assert (sonnet["budget_eur"], sol["budget_eur"]) == (20, 20)
+    assert sol["pricing"] == {"input": 2, "cache_read": 0.2, "output": 10}
+    assert registry.model("qwen-large")["pricing"] is None
 
 
 def test_seed_files_match_expected_shape():

@@ -213,3 +213,34 @@ def test_admin_saves_openai_compatible_model(ctx, db, admin_user):
     )
     with pytest.raises(psycopg.errors.CheckViolation):
         admin_handlers.upsert_model(ctx, admin_user, "bad", "openai_compatible", "bad", "small", "laptop")
+
+
+def test_admin_saves_launch_settings_and_they_round_trip(ctx, db, admin_user):
+    overrides = {"set": {"chat_template_kwargs": {"enable_thinking": False}}, "drop": ["n"]}
+    serving = {"weights_gb": 18.0, "kv_kb_per_token": 32, "vllm_args": ["--trust-remote-code"]}
+    admin_handlers.upsert_model(
+        ctx,
+        admin_user,
+        "tuned-model",
+        "vllm",
+        "org/tuned-model",
+        "small",
+        "cluster",
+        8001,
+        quantization="none",
+        dtype="bfloat16",
+        max_model_len=8192,
+        system_prefix="PREFIX",
+        request_overrides=overrides,
+        serving=serving,
+    )
+    row = ctx.registry(db).model("tuned-model")
+
+    assert (row["quantization"], row["dtype"], row["max_model_len"], row["system_prefix"]) == (
+        "none",
+        "bfloat16",
+        8192,
+        "PREFIX",
+    )
+    assert row["request_overrides"] == overrides
+    assert row["serving"] == serving

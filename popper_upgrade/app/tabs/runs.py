@@ -4,17 +4,18 @@ from popper_upgrade.app.handlers import runs as handlers
 from popper_upgrade.app.tabs.common import current_user, frame, guarded
 
 COLUMNS = (
-    "id",
-    "created_at",
-    "hypothesis",
+    "status",
     "arm",
     "model_name",
-    "environment",
-    "status",
-    "res",
     "res_stat",
+    "res",
     "n_tests",
+    "hypothesis",
+    "environment",
+    "created_at",
+    "id",
 )
+COLUMN_WIDTHS = ("90px", "100px", "150px", "85px", "55px", "80px", "220px", "110px", "150px", "120px")
 
 
 def build(ctx, run_id):
@@ -25,7 +26,13 @@ def build(ctx, run_id):
         environment = gr.Dropdown(["", "laptop", "cluster"], value="", label="Environment")
         experiment = gr.Textbox(label="Experiment")
         refresh = gr.Button("Refresh runs")
-    table = gr.Dataframe(headers=list(COLUMNS), interactive=False, elem_id="runs_table")
+    table = gr.Dataframe(
+        headers=list(COLUMNS),
+        interactive=False,
+        wrap=False,
+        column_widths=list(COLUMN_WIDTHS),
+        elem_id="runs_table",
+    )
 
     def list_runs(model, arm, status, environment, experiment, request: gr.Request):
         user = current_user(ctx, request)
@@ -42,7 +49,7 @@ def build(ctx, run_id):
     refresh.click(guarded(list_runs), inputs, table, api_name="list_runs")
 
     def pick_run(evt: gr.SelectData):
-        return evt.row_value[0]
+        return evt.row_value[COLUMNS.index("id")]
 
     table.select(pick_run, None, run_id, api_name=False)
     return {"load": (list_runs, inputs, [table])}

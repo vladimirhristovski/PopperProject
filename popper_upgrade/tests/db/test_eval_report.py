@@ -131,3 +131,46 @@ def test_bundle_carries_experiments_into_the_database(db, tmp_path):
         "task": "t",
         "replicate": 1,
     }
+
+
+def test_report_separates_the_learning_phase(db):
+    repo = RunRepository(db, None)
+    learn_id = str(uuid.uuid4())
+    repo.create_experiment({"id": learn_id, "name": "report_test", "spec": {"phase": "learn"}, "status": "open"})
+    learn_run = _add(repo, learn_id, "small", "skills_reviewer", True, None)
+    approved = str(uuid.uuid4())
+    rejected = str(uuid.uuid4())
+    for skill_id, verdict in ((approved, True), (rejected, False)):
+        db.execute(
+            "insert into skills.skills (id, applicability, design_template, preconditions, domain, source_hypothesis, "
+            "source_run_id, approved, content_hash, embedding_model, embedding) "
+            "values (%s, %s, 't', '', 'd', 'h', %s, %s, %s, 'm', array_fill(0.1::real, array[384])::vector)",
+            (skill_id, skill_id, learn_run, verdict, skill_id),
+        )
+    snapshot_id = str(uuid.uuid4())
+    db.execute(
+        "insert into registry.library_snapshots (id, embedding_model, skill_ids, content_hash) "
+        "values (%s, 'm', %s::jsonb, 'hash')",
+        (snapshot_id, f'["{approved}", "{rejected}"]'),
+    )
+    evaluate_id = str(uuid.uuid4())
+    repo.create_experiment(
+        {
+            "id": evaluate_id,
+            "name": "report_test",
+            "spec": {"phase": "evaluate", "learn_experiment_id": learn_id, "prompt_versions": PROMPTS},
+            "status": "open",
+        }
+    )
+    run_id = repo.create_run(
+        run_config(experiment_id=evaluate_id, model_name="small", arm="baseline", library_snapshot_id=snapshot_id)
+    )
+    repo.finish_run(run_id, {"status": "completed", "res": True})
+
+    learning = build_report(db, evaluate_id)["learning"]
+
+    assert (learning["experiment_id"], learning["n_runs"], learning["n_completed"]) == (learn_id, 1, 1)
+    assert (learning["candidates"], learning["learned_skills"], learning["approved_skills"]) == (2, 1, 1)
+    assert learning["empty_library"] is False
+    assert (learning["frozen_snapshot_id"], learning["content_hash"]) == (snapshot_id, "hash")
+    assert build_report(db, learn_id)["learning"] is None

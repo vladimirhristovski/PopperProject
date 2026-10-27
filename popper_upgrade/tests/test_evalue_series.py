@@ -21,3 +21,25 @@ def test_zero_p_value_is_finite():
     series = evalue_series([0.0], 0.1)
     assert series[0]["e_value"] > series[0]["threshold"]
     assert series[0]["e_value"] < float("inf")
+
+
+def test_chart_frame_keeps_a_single_test_and_spans_the_threshold():
+    from popper_upgrade.app.tabs.run_detail import THRESHOLD_STEPS, chart_frame
+
+    frame = chart_frame(evalue_series([0.03], 0.1), 0.1)
+
+    evalues = frame[frame["series"] == "e-value"]
+    threshold = frame[frame["series"] == "threshold"]
+    assert evalues["test"].tolist() == [1]
+    assert len(threshold) == THRESHOLD_STEPS + 1
+    assert threshold["value"].tolist() == [pytest.approx(10)] * len(threshold)
+    assert threshold["test"].min() < 1 < threshold["test"].max()
+
+
+def test_chart_frame_without_tests_still_shows_the_threshold():
+    from popper_upgrade.app.tabs.run_detail import chart_frame
+
+    frame = chart_frame([], 0.05)
+
+    assert set(frame["series"]) == {"threshold"}
+    assert frame["value"].tolist() == [pytest.approx(20)] * len(frame)

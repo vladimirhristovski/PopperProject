@@ -9,9 +9,15 @@ from pathlib import Path
 
 import numpy as np
 
+from popper_upgrade.db.registry_repo import MODEL_COLUMNS
 from popper_upgrade.db.skills_repo import SKILL_COLUMNS, row_to_skill
 from popper_upgrade.skills.embedding import DEFAULT_EMBEDDING_MODEL
 from popper_upgrade.skills.schema import DecisionExample, Skill
+
+
+def skills_content_hash(skills):
+    fingerprints = sorted(f"{s['id']}:{Skill(**_skill_fields(s)).content_hash}:{s['approved']}" for s in skills)
+    return hashlib.sha256("\n".join(fingerprints).encode()).hexdigest()
 
 
 def export_snapshot(conn, path, include_rejected=True):
@@ -33,10 +39,7 @@ def export_snapshot(conn, path, include_rejected=True):
     prompt_versions = conn.execute(
         "select id::text as id, role, text, hash from registry.prompt_versions order by hash"
     ).fetchall()
-    models_table = conn.execute(
-        "select id::text as id, name, backend, served_model_id, size_class, environment, port, default_temperature, "
-        "base_url, api_key_env, strip_tools, min_disk_gb from registry.models order by name"
-    ).fetchall()
+    models_table = conn.execute(f"select {MODEL_COLUMNS} from registry.models order by name").fetchall()
     hypotheses = conn.execute(
         "select s.name as set_name, h.id::text as id, h.text, h.split, h.ground_truth "
         "from registry.hypotheses h join registry.hypothesis_sets s on s.id = h.set_id order by s.name, h.text"
@@ -88,6 +91,15 @@ class SnapshotSkillSource:
         self.embedding_model = payload["embedding_model"]
         self.embedder = embedder
         self._skills = [Skill(**_skill_fields(entry)) for entry in payload["skills"]]
+        self.library_info = {
+            "id": self.snapshot_id,
+            "created_at": self.created_at,
+            "embedding_model": self.embedding_model,
+            "skill_ids": sorted(entry["id"] for entry in payload["skills"]),
+            "content_hash": skills_content_hash(
+                [{**entry, "approved": entry.get("approved")} for entry in payload["skills"]]
+            ),
+        }
         matrix = np.array([entry["embedding"] for entry in payload["skills"]], dtype=np.float32)
         if self._skills:
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -100,6 +112,15 @@ class SnapshotSkillSource:
             "datasets": payload["datasets"],
             "prompt_versions": payload["prompt_versions"],
         }
+
+    def add_skill(self, skill, embedding, decision=None):
+        vector = np.array(embedding, dtype=np.float32)
+        norm = np.linalg.norm(vector)
+        vector = vector / (norm if norm else 1)
+        self._skills.append(skill)
+        self._matrix = vector[None, :] if self._matrix.size == 0 else np.vstack([self._matrix, vector])
+        if decision is not None:
+            self._decisions.append(decision)
 
     def _similarities(self, text):
         if not self._skills:

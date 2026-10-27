@@ -33,7 +33,8 @@
     "size_class": "large",
     "environment": "laptop",
     "port": null,
-    "default_temperature": null
+    "default_temperature": null,
+    "api_key_env": "OPENAI_API_KEY"
   },
   {
     "name": "casperhansen/llama-3.3-70b-instruct-awq",
@@ -43,7 +44,25 @@
     "environment": "cluster",
     "port": 8001,
     "default_temperature": null,
-    "min_disk_gb": 45
+    "min_disk_gb": 45,
+    "serving": {
+      "weights_gb": 37.0,
+      "kv_kb_per_token": 320
+    }
+  },
+  {
+    "name": "llama-anchor",
+    "backend": "vllm",
+    "served_model_id": "casperhansen/llama-3.3-70b-instruct-awq",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 45,
+    "serving": {
+      "weights_gb": 37.0,
+      "kv_kb_per_token": 320
+    }
   },
   {
     "name": "Qwen/Qwen2.5-72B-Instruct-AWQ",
@@ -54,5 +73,367 @@
     "port": 8001,
     "default_temperature": null,
     "min_disk_gb": 45
+  },
+  {
+    "name": "meta-llama/Llama-3.1-8B-Instruct",
+    "backend": "vllm",
+    "served_model_id": "meta-llama/Llama-3.1-8B-Instruct",
+    "size_class": "small",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 20,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 15.0,
+      "kv_kb_per_token": 128,
+      "gated": true,
+      "fallback": "set HF_TOKEN to a token with access to meta-llama/Llama-3.1-8B-Instruct, or ask Vladimir for the job built on the ungated mirror unsloth/Llama-3.1-8B-Instruct"
+    }
+  },
+  {
+    "name": "RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16",
+    "backend": "vllm",
+    "served_model_id": "RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 70,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 60.4,
+      "kv_kb_per_token": 192,
+      "fallback": "run popper_upgrade.sif llama-anchor instead"
+    }
+  },
+  {
+    "name": "Qwen/Qwen3.5-9B",
+    "backend": "vllm",
+    "served_model_id": "Qwen/Qwen3.5-9B",
+    "size_class": "small",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 25,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 18.0,
+      "kv_kb_per_token": 32
+    },
+    "request_overrides": {
+      "set": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  {
+    "name": "Qwen/Qwen3.8-27B-FP8",
+    "backend": "vllm",
+    "served_model_id": "Qwen/Qwen3.8-27B-FP8",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 35,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 28.7,
+      "kv_kb_per_token": 64
+    },
+    "request_overrides": {
+      "set": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  {
+    "name": "qwen-large",
+    "backend": "vllm",
+    "served_model_id": "Qwen/Qwen3.8-27B",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 60,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "max_model_len": 16384,
+    "serving": {
+      "weights_gb": 51.8,
+      "kv_kb_per_token": 64,
+      "gated": false,
+      "fallback": "run popper_upgrade.sif llama-anchor instead",
+      "vllm_args": [
+        "--default-chat-template-kwargs",
+        "{\"enable_thinking\": false}"
+      ]
+    },
+    "request_overrides": {
+      "max_output_tokens": 4096,
+      "context_margin": 256,
+      "set": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "presence_penalty": 1.5
+      }
+    }
+  },
+  {
+    "name": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "backend": "vllm",
+    "served_model_id": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "size_class": "small",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 12,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 7.4,
+      "kv_kb_per_token": 16,
+      "vllm_args": [
+        "--trust-remote-code",
+        "--mamba_ssm_cache_dtype",
+        "float32"
+      ]
+    },
+    "request_overrides": {
+      "set": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  {
+    "name": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "backend": "vllm",
+    "served_model_id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+    "size_class": "large",
+    "environment": "cluster",
+    "port": 8001,
+    "default_temperature": null,
+    "min_disk_gb": 70,
+    "quantization": "none",
+    "dtype": "bfloat16",
+    "serving": {
+      "weights_gb": 61.3,
+      "kv_kb_per_token": 6,
+      "vllm_args": [
+        "--trust-remote-code",
+        "--mamba-backend",
+        "flashinfer",
+        "--mamba-ssm-cache-dtype",
+        "float16",
+        "--enable-mamba-cache-stochastic-rounding",
+        "--mamba-cache-philox-rounds",
+        "5"
+      ],
+      "fallback": "ask Vladimir for the job built on the FP8 build RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8, or run popper_upgrade.sif llama-anchor instead"
+    },
+    "request_overrides": {
+      "set": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  {
+    "name": "gpt-6-sol",
+    "backend": "openai_compatible",
+    "served_model_id": "openai/gpt-6-sol",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "OPENAI_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "max_output_tokens": 4096,
+      "drop": [
+        "temperature"
+      ],
+      "rename": {
+        "max_tokens": "max_completion_tokens"
+      },
+      "set": {
+        "model": "gpt-6-sol",
+        "reasoning_effort": "none"
+      }
+    },
+    "pricing": {
+      "input": 2,
+      "cache_read": 0.2,
+      "output": 10
+    },
+    "budget_eur": 20
+  },
+  {
+    "name": "gpt-6.1-sol",
+    "backend": "openai_compatible",
+    "served_model_id": "openai/gpt-6.1-sol",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "OPENAI_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "drop": [
+        "temperature"
+      ],
+      "rename": {
+        "max_tokens": "max_completion_tokens"
+      },
+      "set": {
+        "model": "gpt-6.1-sol"
+      }
+    }
+  },
+  {
+    "name": "gpt-6-luna",
+    "backend": "openai_compatible",
+    "served_model_id": "openai/gpt-6-luna",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "OPENAI_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "drop": [
+        "temperature"
+      ],
+      "rename": {
+        "max_tokens": "max_completion_tokens"
+      },
+      "set": {
+        "model": "gpt-6-luna"
+      }
+    }
+  },
+  {
+    "name": "claude-opus-5-5",
+    "backend": "openai_compatible",
+    "served_model_id": "anthropic/claude-opus-5-5",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.anthropic.com/v1",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "drop": [
+        "n"
+      ],
+      "set": {
+        "model": "claude-opus-5-5"
+      }
+    }
+  },
+  {
+    "name": "claude-sonnet-5-5",
+    "backend": "anthropic_messages",
+    "served_model_id": "anthropic/claude-sonnet-5-5",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.anthropic.com/v1",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "max_output_tokens": 4096,
+      "drop": [
+        "n"
+      ],
+      "set": {
+        "model": "claude-sonnet-5-5",
+        "thinking": {
+          "type": "between_tools"
+        }
+      }
+    },
+    "pricing": {
+      "input": 2,
+      "cache_read": 0.1,
+      "cache_write": 2.5,
+      "output": 10
+    },
+    "budget_eur": 20
+  },
+  {
+    "name": "grok-4.7",
+    "backend": "openai_compatible",
+    "served_model_id": "grok-4.7",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.x.ai/v1",
+    "api_key_env": "XAI_API_KEY",
+    "strip_tools": false,
+    "request_overrides": {
+      "drop": [
+        "presence_penalty",
+        "frequency_penalty",
+        "stop"
+      ]
+    }
+  },
+  {
+    "name": "grok-4.20-0309-non-reasoning",
+    "backend": "openai_compatible",
+    "served_model_id": "grok-4.20-0309-non-reasoning",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.x.ai/v1",
+    "api_key_env": "XAI_API_KEY",
+    "strip_tools": false
+  },
+  {
+    "name": "deepseek-v4-pro",
+    "backend": "openai_compatible",
+    "served_model_id": "deepseek-v4-pro",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "strip_tools": false
+  },
+  {
+    "name": "deepseek-flash",
+    "backend": "openai_compatible",
+    "served_model_id": "deepseek-flash",
+    "size_class": "large",
+    "environment": "laptop",
+    "port": null,
+    "default_temperature": null,
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "strip_tools": false
   }
 ]

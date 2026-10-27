@@ -7,11 +7,19 @@ from pathlib import Path
 
 from cluster.common import LOCAL_HOST, load_baseline
 from popper_upgrade.models import check_environment, serving_for
+from popper_upgrade.serving.vllm import DEFAULT_FALLBACK, LaunchError, plan_launch
 from popper_upgrade.skills.embedding import Embedder
 
 GB = 1024**3
 ANSWER_TIMEOUT = 180
 MODEL_CHECK = "model_answers"
+DRIVER_CHECK = "driver"
+IMAGE_ENV = "POPPER_IMAGE"
+DRIVER_FLOORS = {
+    "modern": ("popper_modern.sif", (575, 51)),
+    "qwen": ("popper_qwen.sif", (525, 60)),
+}
+TOKEN_ENVS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
 def _result(name, ok, detail):
@@ -43,6 +51,76 @@ def _gpu_query():
     )
     name, memory_mb = out.stdout.strip().splitlines()[0].rsplit(",", 1)
     return name.strip(), int(memory_mb) / 1024
+
+
+def _driver_version():
+    out = subprocess.run(
+        ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return out.stdout.strip().splitlines()[0].strip()
+
+
+def _version_tuple(text):
+    return tuple(int(part) for part in text.split(".")[:2])
+
+
+def check_driver(job):
+    floor = DRIVER_FLOORS.get(os.environ.get(IMAGE_ENV))
+    try:
+        version = _driver_version()
+        found = _version_tuple(version)
+    except Exception as e:
+        if floor:
+            detail = f"the GPU driver version could not be read ({type(e).__name__}); {DEFAULT_FALLBACK}"
+            return _result(DRIVER_CHECK, False, detail)
+        return _result(DRIVER_CHECK, True, "driver version not readable; not needed for this image")
+    if not floor:
+        return _result(DRIVER_CHECK, True, f"driver {version}")
+    image, minimum_version = floor
+    minimum = ".".join(str(part) for part in minimum_version)
+    if found < minimum_version:
+        detail = (
+            f"driver too old: this machine has {version} but {image} needs {minimum} or newer; "
+            f"{DEFAULT_FALLBACK}"
+        )
+        return _result(DRIVER_CHECK, False, detail)
+    return _result(DRIVER_CHECK, True, f"driver {version} (needs {minimum} or newer)")
+
+
+def check_gpu_memory(job):
+    model = model_row(job)
+    if model["backend"] != "vllm":
+        return _result("memory", True, "no local GPU model in this job")
+    try:
+        name, vram_gb = _gpu_query()
+    except Exception:
+        return _result("memory", True, "not checked: no GPU is visible")
+    try:
+        plan = plan_launch(model, vram_gb)
+    except LaunchError as e:
+        return _result("memory", False, str(e))
+    detail = f"{model['name']} fits {vram_gb:.0f} GB with a {plan['max_model_len']}-token context"
+    return _result("memory", True, detail)
+
+
+def _model_cached(served_model_id):
+    return (hf_home() / "hub" / f"models--{served_model_id.replace('/', '--')}" / "refs" / "main").is_file()
+
+
+def check_hf_token(job):
+    model = model_row(job)
+    serving = model.get("serving") or {}
+    if not serving.get("gated"):
+        return _result("token", True, "no Hugging Face token is needed for this model")
+    if any(os.environ.get(name) for name in TOKEN_ENVS) or _model_cached(model["served_model_id"]):
+        return _result("token", True, f"access to {model['served_model_id']} is available")
+    fallback = serving.get("fallback") or DEFAULT_FALLBACK
+    detail = f"{model['served_model_id']} needs a Hugging Face token (HF_TOKEN) and none is set; please {fallback}"
+    return _result("token", False, detail)
 
 
 def check_gpu(job):
@@ -77,10 +155,11 @@ def check_data(job):
     missing = popper_common.check_data()
     spec = json.loads((Path(job["dir"]) / job["spec"]).read_text(encoding="utf-8"))
     source = spec["source"]
-    if source.get("kind") == "discoverybench":
-        path = Path(config.DATA_DIR) / source["path"]
-        if not path.exists():
-            missing.append(str(path))
+    for part in source["parts"] if source.get("kind") == "combined" else [source]:
+        if part.get("kind") == "discoverybench":
+            path = Path(config.DATA_DIR) / part["path"]
+            if not path.exists():
+                missing.append(str(path))
     if missing:
         return _result("data", False, f"missing data files: {', '.join(missing)}")
     return _result("data", True, f"data found in {config.DATA_DIR}")
@@ -120,7 +199,10 @@ def check_model_answers(job):
 
 
 CHECKS = (
+    (DRIVER_CHECK, "check_driver"),
     ("gpu", "check_gpu"),
+    ("memory", "check_gpu_memory"),
+    ("token", "check_hf_token"),
     ("disk", "check_disk"),
     ("data", "check_data"),
     ("snapshot", "check_snapshot"),
@@ -140,6 +222,9 @@ def run_preflight(job, workdir):
     workdir.mkdir(parents=True, exist_ok=True)
     checks = []
     for name, function_name in CHECKS:
+        if checks and not checks[0]["ok"] and checks[0]["name"] == DRIVER_CHECK:
+            checks.append(_result(name, False, "not tried because the driver is too old"))
+            continue
         if name == MODEL_CHECK and not all(check["ok"] for check in checks):
             checks.append(_result(name, False, "not tried because an earlier check failed"))
             continue

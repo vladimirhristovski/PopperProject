@@ -12,16 +12,17 @@ from popper_upgrade.app.tabs.common import (
 )
 
 CHART_COLUMNS = ["test", "value", "series"]
+THRESHOLD_STEPS = 20
 
 
 def chart_frame(series, alpha):
     threshold = 1 / alpha
-    rows = []
-    for point in series:
-        rows.append({"test": point["test"], "value": point["e_value"], "series": "e-value"})
-        rows.append({"test": point["test"], "value": point["threshold"], "series": "threshold"})
-    if not series:
-        rows = [{"test": x, "value": threshold, "series": "threshold"} for x in (0, 1)]
+    span = max(len(series), 1) + 1
+    rows = [
+        {"test": round(span * step / THRESHOLD_STEPS, 3), "value": threshold, "series": "threshold"}
+        for step in range(THRESHOLD_STEPS + 1)
+    ]
+    rows += [{"test": point["test"], "value": point["e_value"], "series": "e-value"} for point in series]
     return pd.DataFrame(rows, columns=CHART_COLUMNS)
 
 
@@ -43,7 +44,7 @@ def build(ctx, run_id):
     with gr.Row():
         skills = gr.JSON(label="Skills by role")
         reviews = gr.JSON(label="Design reviews")
-    chart = gr.LinePlot(
+    chart = gr.ScatterPlot(
         x="test",
         y="value",
         color="series",

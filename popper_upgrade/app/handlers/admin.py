@@ -1,9 +1,10 @@
-import uuid
 
 from popper_upgrade.app import auth
 from popper_upgrade.app.auth import require_admin
 from popper_upgrade.db.audit import log_event
 from popper_upgrade.db.bundle import import_bundle
+from popper_upgrade.db.registry_repo import upsert_model_row
+from popper_upgrade.serving.pricing import check_pricing
 
 
 def list_users(ctx, user):
@@ -44,35 +45,44 @@ def upsert_model(
     api_key_env=None,
     strip_tools=True,
     min_disk_gb=None,
+    quantization=None,
+    dtype=None,
+    max_model_len=None,
+    system_prefix=None,
+    request_overrides=None,
+    serving=None,
+    pricing=None,
+    budget_eur=None,
 ):
     require_admin(user)
     with ctx.conn() as conn:
         before = conn.execute("select to_jsonb(m) as row from registry.models m where name = %s", (name,)).fetchone()
-        row = conn.execute(
-            "insert into registry.models as m (id, name, backend, served_model_id, size_class, environment, port, "
-            "default_temperature, base_url, api_key_env, strip_tools, min_disk_gb) "
-            "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-            "on conflict (name) do update set backend = excluded.backend, "
-            "served_model_id = excluded.served_model_id, size_class = excluded.size_class, "
-            "environment = excluded.environment, port = excluded.port, "
-            "default_temperature = excluded.default_temperature, base_url = excluded.base_url, "
-            "api_key_env = excluded.api_key_env, strip_tools = excluded.strip_tools, "
-            "min_disk_gb = excluded.min_disk_gb returning to_jsonb(m) as row",
-            (
-                str(uuid.uuid4()),
-                name,
-                backend,
-                served_model_id,
-                size_class,
-                environment,
-                port,
-                default_temperature,
-                base_url or None,
-                api_key_env or None,
-                strip_tools,
-                min_disk_gb,
-            ),
-        ).fetchone()
+        row = {
+            "row": upsert_model_row(
+                conn,
+                {
+                    "name": name,
+                    "backend": backend,
+                    "served_model_id": served_model_id,
+                    "size_class": size_class,
+                    "environment": environment,
+                    "port": port,
+                    "default_temperature": default_temperature,
+                    "base_url": base_url or None,
+                    "api_key_env": api_key_env or None,
+                    "strip_tools": strip_tools,
+                    "min_disk_gb": min_disk_gb,
+                    "quantization": quantization or None,
+                    "dtype": dtype or None,
+                    "max_model_len": max_model_len,
+                    "system_prefix": system_prefix or None,
+                    "request_overrides": request_overrides or None,
+                    "serving": serving or None,
+                    "pricing": check_pricing(pricing) if pricing else None,
+                    "budget_eur": budget_eur,
+                },
+            )
+        }
         log_event(
             conn,
             user.id,

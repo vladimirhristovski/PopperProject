@@ -4,34 +4,31 @@ import importlib.metadata
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
-from datetime import datetime, timezone
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
+from cluster import parts as parts_module
 from cluster import preflight as preflight_module
+from cluster import store
+from cluster.budget import Budget, resolve_max_hours
 from cluster.common import Interrupted, _signals, run_experiment_job
-from cluster.upload import maybe_upload
-from popper_upgrade.db.rows import run_key
 from popper_upgrade.eval.report import report_from_bundle, write_report
+from popper_upgrade.serving import logs
 
 JOBS_DIR = Path(os.environ.get("POPPER_JOBS_DIR", Path(__file__).resolve().parent / "jobs"))
 GIT_SHA_FILE = Path(__file__).resolve().parent / "GIT_SHA"
 OPERATOR = "Vladimir"
 MAX_LISTED_JOBS = 6
-RUNS = "runs.jsonl"
-JSONL_FILES = ("run_skills.jsonl", "design_reviews.jsonl", "skill_decisions.jsonl")
-COPIED_FILES = ("experiments.jsonl", "candidate_skills.jsonl", "manifest.json")
 
 
 class JobError(Exception):
     pass
-
-
-def _now():
-    return datetime.now(timezone.utc)
 
 
 def list_jobs():
@@ -47,66 +44,6 @@ def load_job(name):
         raise JobError(f"there is no job called {name}")
     job = json.loads((path / "job.json").read_text(encoding="utf-8"))
     return {**job, "dir": str(path.resolve())}
-
-
-def _read_lines(path):
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def _write_lines(path, rows):
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-
-
-def _merged_runs(directory):
-    merged = {}
-    for row in _read_lines(directory / RUNS):
-        merged[row["id"]] = {**merged.get(row["id"], {}), **row}
-    return merged
-
-
-def close_stale_runs(bundle):
-    stale = [run_id for run_id, row in _merged_runs(bundle).items() if row.get("status") == "running"]
-    if stale:
-        with (bundle / RUNS).open("a", encoding="utf-8") as handle:
-            for run_id in stale:
-                row = {
-                    "id": run_id,
-                    "status": "error",
-                    "error": "the job stopped before this run finished",
-                    "finished_at": _now().isoformat(),
-                }
-                handle.write(json.dumps(row) + "\n")
-    return len(stale)
-
-
-def _final_runs(bundle):
-    best = {}
-    for row in _merged_runs(bundle).values():
-        key = run_key(row)
-        held = best.get(key)
-        if held is None or row.get("status") == "completed" or held.get("status") != "completed":
-            best[key] = row
-    return list(best.values())
-
-
-def stage_results(bundle, stage):
-    stage.mkdir(parents=True, exist_ok=True)
-    runs = _final_runs(bundle)
-    kept = {run["id"] for run in runs}
-    _write_lines(stage / RUNS, runs)
-    for name in JSONL_FILES:
-        _write_lines(stage / name, [row for row in _read_lines(bundle / name) if row.get("run_id") in kept | {None}])
-    for name in COPIED_FILES:
-        if (bundle / name).exists():
-            shutil.copyfile(bundle / name, stage / name)
-    (stage / "trajectories").mkdir(exist_ok=True)
-    for run_id in kept:
-        source = bundle / "trajectories" / f"{run_id}.json"
-        if source.is_file():
-            shutil.copyfile(source, stage / "trajectories" / source.name)
-    return runs
 
 
 def _sif_path():
@@ -157,6 +94,23 @@ def _package_version(name):
         return None
 
 
+def _vllm_version():
+    python = os.environ.get("POPPER_VLLM_PYTHON")
+    if not python:
+        return _package_version("vllm")
+    try:
+        out = subprocess.run(
+            [python, "-c", "import importlib.metadata as m; print(m.version('vllm'))"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
 def _model_revision(served_model_id):
     ref = preflight_module.hf_home() / "hub" / f"models--{served_model_id.replace('/', '--')}" / "refs" / "main"
     try:
@@ -173,7 +127,7 @@ def _gpu():
     return {"name": name, "vram_gb": round(vram_gb, 1)}
 
 
-def build_manifest(base, job, runs, sif, exit_code):
+def build_manifest(base, job, runs, sif, exit_code, extra=None):
     completed = [run for run in runs if run.get("status") == "completed"]
     served = next(
         (m["served_model_id"] for m in preflight_module.read_snapshot(job)["models"] if m["name"] == job["model"]),
@@ -183,67 +137,135 @@ def build_manifest(base, job, runs, sif, exit_code):
         **base,
         "job": job["name"],
         "model": job["model"],
-        "finished_at": _now().isoformat(),
+        "finished_at": store.now().isoformat(),
         "exit_code": exit_code,
         "sif_path": str(sif.path) if sif.path else None,
         "sif_sha256": sif.result(),
         "popper_sha": _popper_commit(),
-        "vllm_version": _package_version("vllm"),
+        "vllm_version": _vllm_version(),
         "gpu": _gpu(),
         "model_revision": _model_revision(served),
         "n_runs": len(runs),
         "n_completed": len(completed),
         "n_errors": sum(1 for run in runs if run.get("status") == "error"),
         "runs_without_tokens": sum(1 for run in completed if run.get("tokens_in") is None),
+        **(extra or {}),
     }
 
 
-def pack_archive(bundle, workdir, job, sif, exit_code):
-    stamp = _now().strftime("%Y%m%dT%H%M%SZ")
-    stem = f"popper_results_{job['name']}_{stamp}"
+@dataclass
+class Packed:
+    archive: Path
+    runs: list
+    part: int
+    progress: dict
+    complete: bool
+
+
+def _frozen_snapshot_id(bundle):
+    path = Path(bundle) / parts_module.FREEZE_INFO
+    return json.loads(path.read_text(encoding="utf-8")).get("snapshot_id") if path.exists() else None
+
+
+def _library_snapshot_id(job):
+    if not job.get("library_from"):
+        return None
+    path = Path(job["dir"]) / job["library_from"]
+    return json.loads(path.read_text(encoding="utf-8")).get("snapshot_id")
+
+
+def pack_archive(bundle, workdir, job, sif, exit_code, budget):
     workdir = Path(workdir)
-    close_stale_runs(bundle)
-    stage = Path(tempfile.mkdtemp(dir=workdir, prefix=".stage_")) / stem
+    store.close_stale_runs(bundle)
+    if not store.final_runs(bundle):
+        return None
+    previous = parts_module.read_parts(workdir)
+    number = max((part["part"] for part in previous), default=0) + 1
+    stem = f"popper_results_{job['name']}_part{number:02d}_{store.now().strftime('%Y%m%dT%H%M%SZ')}"
+    scratch = Path(tempfile.mkdtemp(dir=workdir, prefix=".stage_"))
+    stage = scratch / stem
     try:
-        runs = stage_results(bundle, stage)
-        if not runs:
-            return None, []
-        write_report(report_from_bundle(stage), stage)
-        manifest = json.loads((stage / "manifest.json").read_text(encoding="utf-8"))
-        manifest = build_manifest(manifest, job, runs, sif, exit_code)
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        runs, candidate_ids = parts_module.stage_part(bundle, stage, previous)
+        parts_module.stage_cumulative(bundle, scratch / "view")
+        write_report(report_from_bundle(scratch / "view"), stage)
+        progress = budget.progress()
+        complete = bool(progress) and progress["total"] > 0 and progress["done"] >= progress["total"]
+        manifest = json.loads((stage / parts_module.MANIFEST).read_text(encoding="utf-8"))
+        extra = {
+            "part": number,
+            "progress": progress,
+            "complete": complete,
+            "max_hours": budget.max_hours,
+            "budget_reached": budget.exhausted,
+            "frozen_snapshot_id": _frozen_snapshot_id(bundle) or _library_snapshot_id(job),
+        }
+        manifest = build_manifest(manifest, job, runs, sif, exit_code, extra)
+        (stage / parts_module.MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         if (workdir / "preflight.json").exists():
             shutil.copyfile(workdir / "preflight.json", stage / "preflight.json")
+        for name in (logs.VLLM_LOG, logs.PROXY_LOG):
+            logs.copy_tail(workdir / name, stage / name)
         archive = workdir / f"{stem}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(stage, arcname=stem)
     finally:
-        shutil.rmtree(stage.parent, ignore_errors=True)
-    return archive, runs
+        shutil.rmtree(scratch, ignore_errors=True)
+    record = {
+        "part": number,
+        "name": archive.name,
+        "created_at": store.now().isoformat(),
+        "runs": [run["id"] for run in runs],
+        "candidates": candidate_ids,
+    }
+    parts_module.write_parts(workdir, [*previous, record])
+    return Packed(archive, runs, number, progress, complete)
 
 
 def preflight_message(result, workdir):
-    failed = [check for check in result["checks"] if not check["ok"]]
+    failed = [check for check in result["checks"] if not check["ok"] and not check["detail"].startswith("not tried")]
     lines = ["The machine check failed, so nothing was run."]
     lines += [f"- {check['name']}: {check['detail']}" for check in failed[:5]]
     lines.append(f"Please send this file to {OPERATOR}: {Path(workdir).resolve() / 'preflight.json'}")
     return lines
 
 
-def finish_message(archive, runs, exit_code, url):
+def _progress_line(progress):
+    phases = []
+    for phase, entry in progress["phases"].items():
+        arms = ", ".join(f"{arm} {item['done']}/{item['total']}" for arm, item in entry["arms"].items())
+        phases.append(f"{phase} {entry['done']}/{entry['total']} ({arms})")
+    return f"Progress so far: {progress['done']} of {progress['total']} runs: " + "; ".join(phases) + "."
+
+
+def finish_message(packed, exit_code, budget):
+    runs = packed.runs
     completed = sum(1 for run in runs if run.get("status") == "completed")
     errors = sum(1 for run in runs if run.get("status") == "error")
-    if exit_code == 0:
-        lines = [f"Finished: {len(runs)} runs ({completed} completed, {errors} ended in an error)."]
-        if completed == 0:
-            lines.append("No run completed successfully; the file is still needed to find out why.")
-    else:
+    tonight = f"Part {packed.part}: {len(runs)} runs tonight ({completed} completed, {errors} ended in an error)."
+    send = f"Please send this file to {OPERATOR}: {packed.archive.resolve()}"
+    if exit_code != 0:
         lines = [
-            f"The job was stopped early (exit code {exit_code}) after {len(runs)} runs.",
+            f"The job was stopped early (exit code {exit_code}) after {len(runs)} runs tonight.",
             "Progress is saved: run the same command again in this directory to continue.",
         ]
-    lines.append(f"Uploaded automatically: {url}" if url else "The results were not uploaded automatically.")
-    lines.append(f"Please send this file to {OPERATOR}: {archive.resolve()}")
+    elif packed.complete:
+        lines = [tonight, "Everything is finished."]
+        send = f"ALL DONE — send this file to {OPERATOR}: {packed.archive.resolve()}"
+    elif budget.exhausted:
+        lines = [
+            tonight,
+            f"The {budget.max_hours:g}-hour limit was reached (budget reached): no new run was started,",
+            "and none was cut off.",
+        ]
+    else:
+        lines = [tonight, "Every run was tried, but some did not complete; they will be tried again next time."]
+    if completed == 0 and runs and not packed.complete:
+        lines.append("No run completed successfully; the file is still needed to find out why.")
+    if packed.progress:
+        lines.append(_progress_line(packed.progress))
+    if not packed.complete and exit_code == 0:
+        lines.append("Run the same command again in this directory to continue.")
+    lines.append(send)
     return lines
 
 
@@ -276,10 +298,13 @@ def _apply_git_sha(job):
     os.environ.setdefault("POPPER_GIT_SHA", job.get("git_sha") or "unknown")
 
 
-def run_job(name, workdir=".", skip_preflight=False, replicates=None):
+def run_job(name, workdir=".", skip_preflight=False, replicates=None, per_task=None, max_hours=None, clock=None):
+    clock = clock or time.monotonic
+    started = clock()
     try:
         job = _pick_job(name)
-    except JobError as e:
+        hours = resolve_max_hours(max_hours)
+    except (JobError, ValueError) as e:
         print(e)
         return 2
     _apply_git_sha(job)
@@ -296,7 +321,8 @@ def run_job(name, workdir=".", skip_preflight=False, replicates=None):
             return 1
     sif = _SifHash()
     if bundle.exists():
-        close_stale_runs(bundle)
+        store.close_stale_runs(bundle)
+    budget = Budget(bundle, hours, clock, started)
     job_dir = Path(job["dir"])
     code = run_experiment_job(
         job_dir / job["spec"],
@@ -304,13 +330,19 @@ def run_job(name, workdir=".", skip_preflight=False, replicates=None):
         job_dir / job["snapshot"],
         bundle,
         replicates=replicates,
+        per_task=per_task,
+        budget=budget,
+        library_from=job_dir / job["library_from"] if job.get("library_from") else None,
+        log_dir=workdir,
     )
-    archive, runs = pack_archive(bundle, workdir, job, sif, code) if bundle.exists() else (None, [])
-    if archive is None:
+    packed = pack_archive(bundle, workdir, job, sif, code, budget) if bundle.exists() else None
+    if packed is None:
+        if budget.exhausted:
+            print(f"The {hours:g}-hour limit is too short to start even one run, so nothing was run.")
+            return code or 1
         print("No run was recorded, so there are no results to send.")
         return code or 1
-    url = maybe_upload(archive) if code == 0 else None
-    print("\n".join(finish_message(archive, runs, code, url)))
+    print("\n".join(finish_message(packed, code, budget)))
     return code
 
 
@@ -322,8 +354,10 @@ def main(argv=None):
     run.add_argument("--workdir", default=".")
     run.add_argument("--skip-preflight", action="store_true")
     run.add_argument("--replicates", type=int)
+    run.add_argument("--examples-per-task", type=int)
+    run.add_argument("--max-hours", type=float)
     args = parser.parse_args(argv)
-    return run_job(args.job, args.workdir, args.skip_preflight, args.replicates)
+    return run_job(args.job, args.workdir, args.skip_preflight, args.replicates, args.examples_per_task, args.max_hours)
 
 
 if __name__ == "__main__":

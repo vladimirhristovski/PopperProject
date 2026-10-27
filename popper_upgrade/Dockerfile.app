@@ -27,6 +27,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 COPY pyproject.toml /app/pyproject.toml
 COPY popper_upgrade/ /app/popper_upgrade/
 COPY cluster/ /app/cluster/
+COPY local/ /app/local/
 COPY baseline_experiment/config.py baseline_experiment/popper_common.py baseline_experiment/test3_local.py /app/baseline_experiment/
 
 CMD ["python", "-m", "popper_upgrade.app.main"]

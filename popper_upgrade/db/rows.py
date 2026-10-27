@@ -5,7 +5,7 @@ RUN_COLUMNS = set(
     skills_enabled reviewer_enabled human_review model_id model_name temperature seed alpha aggregate_test
     max_num_of_tests max_retry time_limit domain datasets permuted permute_seed library_snapshot_id popper_version
     git_sha pins_hash res res_stat n_tests parsed_result reviewer_rejections reviewer_overrides tokens_in tokens_out
-    wall_time_s trajectory_path error answer task replicate control_degenerate""".split()
+    wall_time_s trajectory_path error answer task replicate control_degenerate cost_usd""".split()
 )
 EXPERIMENT_COLUMNS = set("id name spec status created_at".split())
 RUN_SKILL_COLUMNS = set("run_id skill_id role round similarity".split())

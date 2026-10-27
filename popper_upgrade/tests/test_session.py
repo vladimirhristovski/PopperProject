@@ -282,6 +282,24 @@ def test_entry_review_error_leaves_candidate_pending(tmp_path):
     assert sink.result["status"] == "completed"
 
 
+def test_run_without_a_statistic_completes_with_a_null_res_stat(tmp_path, monkeypatch):
+    class NoStatisticPopper(FakePopper):
+        def validate(self, hypothesis):
+            result = super().validate(hypothesis)
+            self.agent.res = False
+            self.agent.res_stat = None
+            return result
+
+    monkeypatch.setattr(runner_module, "Popper", NoStatisticPopper)
+    session, sink = _session(tmp_path, _spec(skills_enabled=False), [])
+
+    session.run()
+
+    assert sink.result["status"] == "completed"
+    assert sink.result["res"] is False
+    assert sink.result["res_stat"] is None
+
+
 def test_extractor_failure_does_not_lose_the_run(tmp_path):
     session, sink = _session(tmp_path, _spec(), [], extractor=_BrokenExtractor())
 
@@ -334,6 +352,46 @@ def test_tokens_are_recorded_on_error_runs(tmp_path, monkeypatch):
 
     assert sink.result["status"] == "error"
     assert (sink.result["tokens_in"], sink.result["tokens_out"]) == (7, 1)
+
+
+def test_run_cost_is_recorded_per_run_from_priced_usage(tmp_path, monkeypatch):
+    counter = UsageCounter({"input": 2, "cache_read": 0.1, "cache_write": 2.5, "output": 10})
+    counter.add({"prompt_tokens": 999, "completion_tokens": 999})
+    usage = {
+        "prompt_tokens": 1300,
+        "completion_tokens": 50,
+        "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 100,
+    }
+    monkeypatch.setattr(runner_module, "Popper", _usage_popper(counter, usage))
+    session, sink = _session(tmp_path, _spec(skills_enabled=False), [], usage=counter)
+
+    session.run()
+
+    expected = (200 * 2 + 1000 * 0.1 + 100 * 2.5 + 50 * 10) / 1e6
+    assert sink.result["cost_usd"] == pytest.approx(expected)
+
+
+def test_run_cost_is_recorded_on_error_runs_and_absent_without_pricing(tmp_path, monkeypatch):
+    priced = UsageCounter({"input": 2, "output": 10})
+    spend = {"prompt_tokens": 1000, "completion_tokens": 100}
+    monkeypatch.setattr(runner_module, "Popper", _usage_popper(priced, spend))
+    monkeypatch.setattr(FakePopper, "failure", RuntimeError("model down"))
+    session, sink = _session(tmp_path, _spec(skills_enabled=False), [], usage=priced)
+
+    session.run()
+
+    assert sink.result["status"] == "error"
+    assert sink.result["cost_usd"] == pytest.approx(3000 / 1e6)
+
+    plain = UsageCounter()
+    monkeypatch.setattr(runner_module, "Popper", _usage_popper(plain, spend))
+    monkeypatch.setattr(FakePopper, "failure", None)
+    session, sink = _session(tmp_path, _spec(skills_enabled=False), [], usage=plain)
+
+    session.run()
+
+    assert "cost_usd" not in sink.result
 
 
 def test_on_start_receives_session_with_runner(tmp_path):

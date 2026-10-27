@@ -52,3 +52,25 @@ def test_openai_compatible_requires_base_url(db):
             "insert into registry.models (id, name, backend, served_model_id, size_class, environment) "
             "values (gen_random_uuid(), 'm3', 'unknown', 'm3', 'small', 'laptop')"
         )
+
+
+def test_anthropic_messages_backend_needs_a_base_url_and_accepts_pricing(db):
+    columns = "id, name, backend, served_model_id, size_class, environment, base_url, pricing, budget_eur"
+    db.execute(
+        f"insert into registry.models ({columns}) values (gen_random_uuid(), 'm4', 'anthropic_messages', 'm4', "
+        "'large', 'laptop', 'https://host/v1', '{\"input\": 1, \"output\": 2}'::jsonb, 20)"
+    )
+    row = db.execute("select pricing, budget_eur from registry.models where name = 'm4'").fetchone()
+
+    assert row == {"pricing": {"input": 1, "output": 2}, "budget_eur": 20}
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db.execute(
+            "insert into registry.models (id, name, backend, served_model_id, size_class, environment) "
+            "values (gen_random_uuid(), 'm5', 'anthropic_messages', 'm5', 'large', 'laptop')"
+        )
+    db.rollback()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db.execute(
+            "insert into registry.models (id, name, backend, served_model_id, size_class, environment, budget_eur) "
+            "values (gen_random_uuid(), 'm6', 'ollama', 'm6', 'small', 'laptop', 0)"
+        )

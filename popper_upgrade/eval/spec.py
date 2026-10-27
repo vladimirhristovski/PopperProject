@@ -1,4 +1,6 @@
+import hashlib
 import json
+import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -7,6 +9,7 @@ from popper_upgrade.session import RunSpec
 
 ARMS = ("baseline", "skills", "skills_reviewer", "random_skills", "wrong_domain_skills")
 SOURCE_KINDS = ("gender_custom", "discoverybench")
+COMBINED_KIND = "combined"
 PROMPT_ROLES = ("curator", "reviewer", "extractor")
 POPPER_DEFAULTS = {"alpha": 0.1, "max_num_of_tests": 5, "max_retry": 3, "time_limit": 60}
 
@@ -23,9 +26,52 @@ class ExperimentSpec:
     permutation_seeds: list
     popper: dict
     prompt_versions: dict
+    size: str = ""
 
     def to_dict(self):
-        return asdict(self)
+        data = asdict(self)
+        if not data["size"]:
+            del data["size"]
+        return data
+
+
+def source_parts(source):
+    return list(source["parts"]) if source.get("kind") == COMBINED_KIND else [source]
+
+
+def part_replicates(part):
+    return max(part.get("replicates", {}).values(), default=0)
+
+
+def max_replicates(spec):
+    return max([spec.replicates, *(part_replicates(part) for part in source_parts(spec.source))])
+
+
+def _validate_part(part):
+    if part.get("kind") not in SOURCE_KINDS:
+        raise ValueError(f"unknown source kind {part.get('kind')}")
+    replicates = part.get("replicates", {})
+    if replicates and (set(replicates) != {"original", "permuted"} or any(int(v) < 1 for v in replicates.values())):
+        raise ValueError("part replicates must give original and permuted counts of at least 1")
+    sample = part.get("sample")
+    if sample is not None:
+        if part["kind"] != "discoverybench":
+            raise ValueError("only a discoverybench part can be sampled")
+        if int(sample.get("originals", 0)) < 1 or "seed" not in sample:
+            raise ValueError("a sample needs originals of at least 1 and a seed")
+
+
+def _validate_source(source):
+    if source.get("kind") != COMBINED_KIND:
+        _validate_part(source)
+        return
+    parts = source.get("parts")
+    if not parts:
+        raise ValueError("a combined source needs parts")
+    for part in parts:
+        if part.get("kind") == COMBINED_KIND:
+            raise ValueError("a combined source cannot nest")
+        _validate_part(part)
 
 
 def _validate(spec):
@@ -34,11 +80,10 @@ def _validate(spec):
         raise ValueError(f"unknown arms: {sorted(unknown)}")
     if not spec.arms or not spec.models:
         raise ValueError("a spec needs at least one model and one arm")
-    if spec.source.get("kind") not in SOURCE_KINDS:
-        raise ValueError(f"unknown source kind {spec.source.get('kind')}")
+    _validate_source(spec.source)
     if spec.replicates < 1:
         raise ValueError("replicates must be at least 1")
-    if len(spec.permutation_seeds) < spec.replicates:
+    if len(spec.permutation_seeds) < max_replicates(spec):
         raise ValueError("permutation_seeds must cover every replicate")
     if len(set(spec.permutation_seeds)) != len(spec.permutation_seeds):
         raise ValueError("permutation_seeds must be distinct")
@@ -62,6 +107,7 @@ def parse_spec(data):
         permutation_seeds=list(data["permutation_seeds"]),
         popper={**POPPER_DEFAULTS, **data.get("popper", {})},
         prompt_versions=dict(data["prompt_versions"]),
+        size=data.get("size", ""),
     )
     _validate(spec)
     return spec
@@ -79,12 +125,31 @@ def run_identity(run):
     return (run.model["name"], run.arm, run.task, run.hypothesis, run.replicate, run.permuted)
 
 
+def _replicates(spec, example):
+    return example.get("replicates", spec.replicates)
+
+
+def schedule_order(spec, examples):
+    seed = int(hashlib.sha256(f"schedule:{spec.name}".encode()).hexdigest()[:16], 16)
+    positions = list(range(len(examples)))
+    random.Random(seed).shuffle(positions)
+    return [examples[position] for position in positions]
+
+
+def planned_counts(spec, examples):
+    return dict.fromkeys(spec.arms, sum(_replicates(spec, example) for example in examples))
+
+
 def expand(spec, model, examples, popper_kwargs, environment, experiment_id=None, snapshot_id=None):
     configure = configure_kwargs(spec)
+    ordered = schedule_order(spec, examples)
+    rounds = max((_replicates(spec, example) for example in ordered), default=0)
     runs = []
-    for example in examples:
-        for replicate in range(example.get("replicates", spec.replicates)):
-            seed = spec.permutation_seeds[replicate]
+    for replicate in range(rounds):
+        seed = spec.permutation_seeds[replicate]
+        for example in ordered:
+            if replicate >= _replicates(spec, example):
+                continue
             permuted = example["permuted"]
             for arm in spec.arms:
                 skills_enabled, reviewer_enabled = flags_for_arm(arm)
@@ -113,6 +178,39 @@ def expand(spec, model, examples, popper_kwargs, environment, experiment_id=None
                     )
                 )
     return runs
+
+
+LEARN_ARM = "skills_reviewer"
+LEARN_SPLIT = "train"
+
+
+def expand_learning(spec, model, examples, popper_kwargs, environment, experiment_id=None, snapshot_id=None):
+    configure = configure_kwargs(spec)
+    skills_enabled, reviewer_enabled = flags_for_arm(LEARN_ARM)
+    return [
+        RunSpec(
+            hypothesis=example["hypothesis"],
+            hypothesis_id=example.get("hypothesis_id"),
+            split=LEARN_SPLIT,
+            arm=LEARN_ARM,
+            model=model,
+            popper_kwargs={**popper_kwargs, "domain": example["domain"]},
+            configure_kwargs=dict(configure),
+            skills_enabled=skills_enabled,
+            reviewer_enabled=reviewer_enabled,
+            learn=True,
+            environment=environment,
+            experiment_id=experiment_id,
+            library_snapshot_id=snapshot_id,
+            data_loader_factory=example["factory"](None),
+            answer=example["answer"],
+            task=example["task"],
+            replicate=0,
+            datasets=list(example.get("datasets", [])),
+        )
+        for example in examples
+        if not example["permuted"]
+    ]
 
 
 def _normalise(text):

@@ -1,3 +1,5 @@
+import json
+
 import gradio as gr
 
 from popper_upgrade.app.handlers import admin as handlers
@@ -16,6 +18,14 @@ MODEL_COLUMNS = (
     "api_key_env",
     "strip_tools",
     "min_disk_gb",
+    "quantization",
+    "dtype",
+    "max_model_len",
+    "system_prefix",
+    "request_overrides",
+    "serving",
+    "pricing",
+    "budget_eur",
 )
 PROMPT_COLUMNS = ("id", "role", "hash", "created_at")
 
@@ -73,7 +83,9 @@ def build(ctx):
         with gr.Row():
             model_name = gr.Textbox(label="Name")
             backend = gr.Dropdown(
-                ["ollama", "vllm", "anthropic", "openai", "openai_compatible"], value="ollama", label="Backend"
+                ["ollama", "vllm", "anthropic", "openai", "openai_compatible", "anthropic_messages"],
+                value="ollama",
+                label="Backend",
             )
             served_model_id = gr.Textbox(label="Served model id")
             size_class = gr.Radio(["small", "large"], value="small", label="Size class")
@@ -85,6 +97,17 @@ def build(ctx):
             api_key_env = gr.Textbox(label="API key env var (openai_compatible, optional)")
             strip_tools = gr.Checkbox(label="Strip tools (openai_compatible)", value=True)
             min_disk_gb = gr.Number(label="Min free disk GB (cluster)", precision=0)
+        with gr.Row():
+            quantization = gr.Textbox(label="vLLM quantization (empty = awq, none = off)")
+            dtype = gr.Textbox(label="vLLM dtype (empty = float16)")
+            max_model_len = gr.Number(label="Max model length", precision=0)
+            system_prefix = gr.Textbox(label="System prefix")
+        with gr.Row():
+            request_overrides = gr.Textbox(label="Request overrides (JSON: drop, set, rename)")
+            serving = gr.Textbox(label="Serving facts (JSON: vllm_args, weights_gb, kv_kb_per_token, gated, fallback)")
+        with gr.Row():
+            pricing = gr.Textbox(label="Pricing (JSON, USD per 1M: input, cache_read, cache_write, output)")
+            budget_eur = gr.Number(label="Budget EUR (paid models)")
         model_button = gr.Button("Save model")
 
     def upsert_model(
@@ -99,6 +122,14 @@ def build(ctx):
         api_key_env,
         strip_tools,
         min_disk_gb,
+        quantization,
+        dtype,
+        max_model_len,
+        system_prefix,
+        request_overrides,
+        serving,
+        pricing,
+        budget_eur,
         request: gr.Request,
     ):
         user = current_user(ctx, request)
@@ -116,6 +147,14 @@ def build(ctx):
             api_key_env,
             strip_tools,
             int(min_disk_gb) if min_disk_gb is not None else None,
+            quantization,
+            dtype,
+            int(max_model_len) if max_model_len is not None else None,
+            system_prefix,
+            json.loads(request_overrides) if request_overrides else None,
+            json.loads(serving) if serving else None,
+            json.loads(pricing) if pricing else None,
+            budget_eur,
         )
         gr.Info("Model saved")
         return frame(handlers.list_models(ctx, user), MODEL_COLUMNS)
@@ -146,6 +185,14 @@ def build(ctx):
             api_key_env,
             strip_tools,
             min_disk_gb,
+            quantization,
+            dtype,
+            max_model_len,
+            system_prefix,
+            request_overrides,
+            serving,
+            pricing,
+            budget_eur,
         ],
         models,
         api_name="upsert_model",
