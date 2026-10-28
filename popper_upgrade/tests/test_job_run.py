@@ -176,6 +176,24 @@ def test_manifest_fields(job_env, tmp_path, monkeypatch):
     assert extra <= set(manifest)
 
 
+def test_manifest_records_the_pinned_revision_and_falls_back_to_the_main_ref(tmp_path, monkeypatch):
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    sif = type("Sif", (), {"path": None, "result": lambda self: None})()
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setattr(job_module, "_gpu", lambda: None)
+    monkeypatch.setattr(job_module, "_vllm_version", lambda: None)
+    monkeypatch.setattr(job_module, "_popper_commit", lambda: None)
+    pinned = write_job(tmp_path / "pinned", revision=sha)
+    plain = write_job(tmp_path / "plain")
+    served = job_module.preflight_module.model_row(plain)["served_model_id"].replace("/", "--")
+    refs = tmp_path / "hf" / "hub" / f"models--{served}" / "refs"
+    refs.mkdir(parents=True)
+    (refs / "main").write_text("mainsha")
+
+    assert job_module.build_manifest({}, pinned, [], sif, 0)["model_revision"] == sha
+    assert job_module.build_manifest({}, plain, [], sif, 0)["model_revision"] == "mainsha"
+
+
 def test_vllm_version_is_read_from_the_serving_interpreter(monkeypatch):
     monkeypatch.setenv("POPPER_VLLM_PYTHON", sys.executable)
     monkeypatch.setattr(

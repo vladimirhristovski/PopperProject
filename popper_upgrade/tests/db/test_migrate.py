@@ -74,3 +74,19 @@ def test_anthropic_messages_backend_needs_a_base_url_and_accepts_pricing(db):
             "insert into registry.models (id, name, backend, served_model_id, size_class, environment, budget_eur) "
             "values (gen_random_uuid(), 'm6', 'ollama', 'm6', 'small', 'laptop', 0)"
         )
+
+
+def test_model_revision_must_be_a_full_lowercase_commit_sha(db):
+    columns = "id, name, backend, served_model_id, size_class, environment, revision"
+    db.execute(
+        f"insert into registry.models ({columns}) values (gen_random_uuid(), 'r1', 'vllm', 'org/r1', 'large', "
+        f"'cluster', '{'a1' * 20}')"
+    )
+    assert db.execute("select revision from registry.models where name = 'r1'").fetchone() == {"revision": "a1" * 20}
+    for bad in ("main", "A1" * 20, "a1" * 19):
+        db.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            db.execute(
+                f"insert into registry.models ({columns}) values (gen_random_uuid(), 'r2', 'vllm', 'org/r2', "
+                f"'large', 'cluster', '{bad}')"
+            )

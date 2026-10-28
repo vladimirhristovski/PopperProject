@@ -79,3 +79,12 @@ def test_prompt_version_dedups_by_hash(db):
     assert first == again
     assert first != other
     assert _count(db, "registry.prompt_versions") == 2
+
+
+def test_seeded_revision_round_trips_for_qwen_large_only(db):
+    registry = RegistryRepository(db)
+    registry.seed_from(SEED_DIR)
+
+    pinned = {model["name"]: model["revision"] for model in registry.models() if model["revision"]}
+
+    assert pinned == {"qwen-large": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"}

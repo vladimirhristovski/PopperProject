@@ -75,6 +75,10 @@ def test_cache_detection_follows_revision_or_main_ref(hf):
     assert not fetch.is_cached(MODEL, REVISION)
     (base / "snapshots" / REVISION).mkdir(parents=True)
     assert fetch.is_cached(MODEL, REVISION)
+    assert not fetch.is_cached(MODEL, "def456")
+    (base / "refs" / "main").unlink()
+    assert fetch.is_cached(MODEL, REVISION)
+    assert not fetch.is_cached(MODEL)
 
 
 def test_hub_check_treats_http_answers_as_reachable(monkeypatch):

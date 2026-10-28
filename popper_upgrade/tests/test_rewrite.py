@@ -87,7 +87,7 @@ def _capped_model(**extra):
 
 
 def _no_tokenizer(monkeypatch):
-    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id: None)
+    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id, revision=None: None)
 
 
 def _sent_max(model, payload, key="max_tokens"):
@@ -154,7 +154,7 @@ def test_output_cap_uses_the_model_tokenizer_when_available(monkeypatch):
         def encode(self, text, add_special_tokens=False):
             return list(range(len(text.split())))
 
-    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id: Tokenizer())
+    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id, revision=None: Tokenizer())
     payload = {"messages": [{"role": "user", "content": " ".join(["w"] * 9000)}]}
 
     assert _sent_max(_capped_model(), payload) == 12288 - 9000 - rewrite_module.MESSAGE_OVERHEAD_TOKENS - 256
@@ -165,10 +165,41 @@ def test_tokenizer_failure_falls_back_to_the_character_estimate(monkeypatch):
         def encode(self, text, add_special_tokens=False):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id: Broken())
+    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id, revision=None: Broken())
     payload = {"messages": [{"role": "user", "content": "x" * 30}]}
 
     assert rewrite_module.estimate_prompt_tokens("m", payload) == 10 + rewrite_module.MESSAGE_OVERHEAD_TOKENS
+
+
+def test_tokenizer_is_loaded_at_the_pinned_revision_only(monkeypatch):
+    import transformers
+
+    calls = []
+
+    def from_pretrained(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "tokenizer"
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
+    rewrite_module._tokenizer.cache_clear()
+
+    assert rewrite_module._tokenizer("org/pinned", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0") == "tokenizer"
+    assert rewrite_module._tokenizer("org/plain") == "tokenizer"
+    rewrite_module._tokenizer.cache_clear()
+    assert calls == [
+        (("org/pinned",), {"revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "local_files_only": True}),
+        (("org/plain",), {"local_files_only": True}),
+    ]
+
+
+def test_output_cap_looks_up_the_tokenizer_with_the_models_revision(monkeypatch):
+    seen = []
+    monkeypatch.setattr(rewrite_module, "_tokenizer", lambda model_id, revision=None: seen.append((model_id, revision)))
+    model = {**_capped_model(), "served_model_id": "org/m", "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"}
+
+    request_rewriter(model)(CHAT_PATH, json.dumps({"messages": []}).encode())
+
+    assert seen == [("org/m", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0")]
 
 
 def test_unavailable_tokenizer_is_cached_as_none(monkeypatch):

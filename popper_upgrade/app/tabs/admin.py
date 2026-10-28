@@ -26,6 +26,7 @@ MODEL_COLUMNS = (
     "serving",
     "pricing",
     "budget_eur",
+    "revision",
 )
 PROMPT_COLUMNS = ("id", "role", "hash", "created_at")
 
@@ -108,6 +109,7 @@ def build(ctx):
         with gr.Row():
             pricing = gr.Textbox(label="Pricing (JSON, USD per 1M: input, cache_read, cache_write, output)")
             budget_eur = gr.Number(label="Budget EUR (paid models)")
+            revision = gr.Textbox(label="Hugging Face revision (40-character commit sha, vLLM models)")
         model_button = gr.Button("Save model")
 
     def upsert_model(
@@ -130,6 +132,7 @@ def build(ctx):
         serving,
         pricing,
         budget_eur,
+        revision,
         request: gr.Request,
     ):
         user = current_user(ctx, request)
@@ -155,6 +158,7 @@ def build(ctx):
             json.loads(serving) if serving else None,
             json.loads(pricing) if pricing else None,
             budget_eur,
+            revision,
         )
         gr.Info("Model saved")
         return frame(handlers.list_models(ctx, user), MODEL_COLUMNS)
@@ -193,6 +197,7 @@ def build(ctx):
             serving,
             pricing,
             budget_eur,
+            revision,
         ],
         models,
         api_name="upsert_model",

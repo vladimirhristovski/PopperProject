@@ -244,3 +244,13 @@ def test_admin_saves_launch_settings_and_they_round_trip(ctx, db, admin_user):
     )
     assert row["request_overrides"] == overrides
     assert row["serving"] == serving
+
+
+def test_admin_saves_and_clears_the_model_revision(ctx, db, admin_user):
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    args = (ctx, admin_user, "pinned-model", "vllm", "org/pinned-model", "large", "cluster", 8001)
+    admin_handlers.upsert_model(*args, revision=sha)
+    assert ctx.registry(db).model("pinned-model")["revision"] == sha
+
+    admin_handlers.upsert_model(*args, revision="")
+    assert ctx.registry(db).model("pinned-model")["revision"] is None

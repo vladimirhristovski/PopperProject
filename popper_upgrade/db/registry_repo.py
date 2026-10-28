@@ -23,6 +23,7 @@ MODEL_FIELDS = (
     "serving",
     "pricing",
     "budget_eur",
+    "revision",
 )
 JSON_FIELDS = ("request_overrides", "serving", "pricing")
 MODEL_COLUMNS = "id::text as id, " + ", ".join(MODEL_FIELDS)

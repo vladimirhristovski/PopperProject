@@ -341,8 +341,20 @@ def _registry_models():
     return {model["name"]: model for model in json.loads(path.read_text(encoding="utf-8"))}
 
 
+def test_only_qwen_large_is_pinned_to_a_revision():
+    pinned = {name: model["revision"] for name, model in _registry_models().items() if model.get("revision")}
+
+    assert pinned == {"qwen-large": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"}
+
+
 def test_llama_anchor_registry_entry():
     anchor = _registry_models()["llama-anchor"]
+    plan = vllm_module.plan_launch(anchor, 80.0)
+    command = vllm_module.ModelVllmServer("m", 8000, launch=anchor).command(plan)
+
+    assert "revision" not in anchor
+    assert plan["args"] == []
+    assert not set(vllm_module.REVISION_FLAGS) & set(command)
 
     assert (anchor["backend"], anchor["environment"]) == ("vllm", "cluster")
     assert anchor["served_model_id"] == "casperhansen/llama-3.3-70b-instruct-awq"
@@ -374,7 +386,15 @@ def test_qwen_large_registry_entry_matches_the_checkpoint():
 
     plan = vllm_module.plan_launch(model, 80.0)
     assert (plan["max_model_len"], plan["quantization"], plan["dtype"]) == (16384, None, "bfloat16")
-    assert plan["args"] == ["--default-chat-template-kwargs", '{"enable_thinking": false}']
+    assert model["revision"] == "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    assert plan["args"] == [
+        "--revision",
+        model["revision"],
+        "--tokenizer-revision",
+        model["revision"],
+        "--default-chat-template-kwargs",
+        '{"enable_thinking": false}',
+    ]
     with pytest.raises(vllm_module.LaunchError, match="llama-anchor"):
         vllm_module.plan_launch(model, 40.0)
 
@@ -390,6 +410,9 @@ def test_qwen_large_turns_thinking_off_server_wide_and_per_request(monkeypatch):
     assert command[command.index("--dtype") + 1] == "bfloat16"
     assert command[command.index("--max-model-len") + 1] == "16384"
     assert "--quantization" not in command
+    assert command[command.index("--revision") + 1] == model["revision"]
+    assert command[command.index("--tokenizer-revision") + 1] == model["revision"]
+    assert command.count("--revision") == command.count("--tokenizer-revision") == 1
 
     body = json.dumps({"model": "Qwen/Qwen3.8-27B", "messages": []}).encode()
     sent = json.loads(request_rewriter(model)(CHAT_PATH, body))

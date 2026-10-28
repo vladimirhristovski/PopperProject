@@ -53,6 +53,7 @@ def upsert_model(
     serving=None,
     pricing=None,
     budget_eur=None,
+    revision=None,
 ):
     require_admin(user)
     with ctx.conn() as conn:
@@ -80,6 +81,7 @@ def upsert_model(
                     "serving": serving or None,
                     "pricing": check_pricing(pricing) if pricing else None,
                     "budget_eur": budget_eur,
+                    "revision": revision or None,
                 },
             )
         }

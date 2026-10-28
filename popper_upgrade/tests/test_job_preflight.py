@@ -373,6 +373,48 @@ def test_download_check_fetches_the_job_model_before_the_server_starts(healthy, 
     ].index("model_answers")
 
 
+def _record_downloads(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        preflight.fetch,
+        "download_model",
+        lambda model_id, revision=None, say=print: calls.append((model_id, revision)) or Path("x"),
+    )
+    return calls
+
+
+def test_download_check_passes_the_pinned_revision_to_the_download(tmp_path, monkeypatch):
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    job = write_job(tmp_path / "job", revision=sha)
+    monkeypatch.delenv("POPPER_FAKE_BACKEND", raising=False)
+    calls = _record_downloads(monkeypatch)
+
+    assert preflight.check_download(job)["ok"]
+    assert calls == [(preflight.model_row(job)["served_model_id"], sha)]
+
+
+def test_download_check_without_a_revision_downloads_the_default_branch(healthy, monkeypatch):
+    calls = _record_downloads(monkeypatch)
+
+    assert preflight.check_download(healthy)["ok"]
+    assert calls == [(preflight.model_row(healthy)["served_model_id"], None)]
+
+
+def test_gated_model_is_cached_only_at_its_pinned_revision(tmp_path, monkeypatch):
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    job = write_job(tmp_path / "job", serving={"gated": True}, revision=sha)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    for name in preflight.TOKEN_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    base = tmp_path / "hf" / "hub" / f"models--{job_model(job)}"
+    (base / "refs").mkdir(parents=True)
+    (base / "refs" / "main").write_text("abc")
+    assert preflight.check_hf_token(job)["ok"] is False
+
+    (base / "snapshots" / sha).mkdir(parents=True)
+    assert preflight.check_hf_token(job)["ok"] is True
+
+
 def test_download_failure_is_reported_and_the_server_is_not_started(healthy, answering, monkeypatch, tmp_path):
     def refuse(model_id, revision=None, say=print):
         raise preflight.fetch.DownloadError("cannot reach Hugging Face at https://huggingface.co (URLError)")

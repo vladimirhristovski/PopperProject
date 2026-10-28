@@ -140,9 +140,30 @@ def test_plan_launch_refuses_when_nothing_fits_and_names_the_fallback():
         vllm_module.plan_launch(_model(serving=SERVING), 40.0)
 
 
+def test_plan_launch_pins_both_revisions_before_the_extra_args():
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    plan = vllm_module.plan_launch(_model(revision=sha, serving={"vllm_args": ["--trust-remote-code"]}), 80.0)
+
+    assert plan["args"] == ["--revision", sha, "--tokenizer-revision", sha, "--trust-remote-code"]
+    assert vllm_module.plan_launch(_model(revision=None), 80.0)["args"] == []
+
+
+def test_command_carries_the_revision_flags_once(monkeypatch):
+    sha = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+    monkeypatch.setenv("POPPER_VLLM_PYTHON", "/usr/bin/vllm-python")
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(revision=sha))
+
+    command = server.command(vllm_module.plan_launch(server.launch, 80.0))
+
+    assert command.count("--revision") == command.count("--tokenizer-revision") == 1
+    assert command[-5:] == ["--enforce-eager", "--revision", sha, "--tokenizer-revision", sha]
+
+
 def test_launch_overrides_are_detected():
     assert not vllm_module.has_launch_overrides(_model(serving={"weights_gb": 1, "kv_kb_per_token": 1}))
     assert vllm_module.has_launch_overrides(_model(dtype="bfloat16"))
+    assert vllm_module.has_launch_overrides(_model(revision="a" * 40))
+    assert not vllm_module.has_launch_overrides(_model(revision=None))
     assert vllm_module.has_launch_overrides(_model(serving={"vllm_args": ["--x"]}))
 
 

@@ -188,6 +188,7 @@ MIN_CONTEXT = SMALL_CONTEXT
 OVERHEAD_GIB = 3.0
 CONTEXT_STEP = 1024
 NO_FLAG = "none"
+REVISION_FLAGS = ("--revision", "--tokenizer-revision")
 DEFAULT_FALLBACK = "run popper_upgrade.sif llama-anchor instead"
 STOP_GRACE_S = 60
 PROC_DIR = "/proc"
@@ -197,9 +198,13 @@ class LaunchError(ValueError):
     pass
 
 
+def revision_args(revision):
+    return [item for flag in REVISION_FLAGS for item in (flag, revision)]
+
+
 def has_launch_overrides(model):
     serving = model.get("serving") or {}
-    return any(model.get(key) is not None for key in ("quantization", "dtype", "max_model_len")) or bool(
+    return any(model.get(key) is not None for key in ("quantization", "dtype", "max_model_len", "revision")) or bool(
         serving.get("vllm_args")
     )
 
@@ -227,7 +232,10 @@ def plan_launch(model, vram_gb):
         "gpu_util": gpu_util,
         "quantization": None if quantization == NO_FLAG else quantization,
         "dtype": model.get("dtype") or BASELINE_DTYPE,
-        "args": [str(arg) for arg in serving.get("vllm_args") or []],
+        "args": [
+            *(revision_args(model["revision"]) if model.get("revision") else []),
+            *(str(arg) for arg in serving.get("vllm_args") or []),
+        ],
     }
 
 

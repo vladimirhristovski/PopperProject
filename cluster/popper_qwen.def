@@ -26,8 +26,8 @@ From: nvidia/cuda:12.8.1-runtime-ubuntu22.04
     export UV_CACHE_DIR=/tmp/uv-cache
     export UV_LINK_MODE=copy
     uv venv --python 3.12 /opt/vllm-env
-    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 torch==2.10.0
-    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 vllm==0.19.1 torch==2.10.0
+    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 torch==2.10.0 -c /opt/popper/popper_upgrade/constraints-vllm-env.txt
+    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 vllm==0.19.1 torch==2.10.0 -c /opt/popper/popper_upgrade/constraints-vllm-env.txt
     uv venv --python 3.10 /opt/popper-env
     uv pip install --python /opt/popper-env/bin/python torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
     uv pip install --python /opt/popper-env/bin/python --no-deps git+https://github.com/snap-stanford/POPPER.git@59611864e09dd15d7528e240ad87c7ddbb4a701c

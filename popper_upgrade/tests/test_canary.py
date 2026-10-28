@@ -140,6 +140,8 @@ def test_the_launch_row_is_qwen_large_with_only_the_listed_differences(env, tmp_
         "--max-num-batched-tokens",
         "2048",
     ]
+    assert args.count("--revision") == args.count("--tokenizer-revision") == 1
+    assert row["revision"] is None
     assert "weights_gb" not in row["serving"]
     assert (row["dtype"], row["quantization"], row["backend"], row["port"]) == ("bfloat16", "none", "vllm", 8001)
     assert row["request_overrides"] == qwen["request_overrides"]

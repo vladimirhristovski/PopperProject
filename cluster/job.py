@@ -112,7 +112,9 @@ def _vllm_version():
     return out.stdout.strip() or None
 
 
-def _model_revision(served_model_id):
+def _model_revision(served_model_id, pinned=None):
+    if pinned:
+        return pinned
     ref = preflight_module.hf_home() / "hub" / f"models--{served_model_id.replace('/', '--')}" / "refs" / "main"
     try:
         return ref.read_text(encoding="utf-8").strip()
@@ -130,10 +132,8 @@ def _gpu():
 
 def build_manifest(base, job, runs, sif, exit_code, extra=None):
     completed = [run for run in runs if run.get("status") == "completed"]
-    served = next(
-        (m["served_model_id"] for m in preflight_module.read_snapshot(job)["models"] if m["name"] == job["model"]),
-        job["model"],
-    )
+    row = next((m for m in preflight_module.read_snapshot(job)["models"] if m["name"] == job["model"]), None)
+    served = row["served_model_id"] if row else job["model"]
     return {
         **base,
         "job": job["name"],
@@ -145,7 +145,7 @@ def build_manifest(base, job, runs, sif, exit_code, extra=None):
         "popper_sha": _popper_commit(),
         "vllm_version": _vllm_version(),
         "gpu": _gpu(),
-        "model_revision": _model_revision(served),
+        "model_revision": _model_revision(served, row.get("revision") if row else None),
         "n_runs": len(runs),
         "n_completed": len(completed),
         "n_errors": sum(1 for run in runs if run.get("status") == "error"),

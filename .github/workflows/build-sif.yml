@@ -237,6 +237,10 @@ jobs:
         run: |
           apptainer exec popper_qwen.sif uv pip freeze --python /opt/popper-env/bin/python > qwen_freeze.txt
           python3 popper_upgrade/tools/check_env.py popper_upgrade/requirements.txt qwen_freeze.txt --popper-sha 59611864e09dd15d7528e240ad87c7ddbb4a701c
+      - name: Gate 2, vLLM env equals the constraints file
+        run: |
+          apptainer exec popper_qwen.sif uv pip freeze --python /opt/vllm-env/bin/python > qwen_vllm_freeze.txt
+          diff <(sort popper_upgrade/constraints-vllm-env.txt) <(sort qwen_vllm_freeze.txt)
       - name: Test SIF
         run: apptainer test popper_qwen.sif
       - name: Gate 3, vLLM serves the thinking-off flag

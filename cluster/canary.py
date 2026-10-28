@@ -17,6 +17,7 @@ from cluster import fetch, preflight
 from cluster.common import Interrupted, _signals
 from popper_upgrade.models import serving_for
 from popper_upgrade.serving import logs
+from popper_upgrade.serving.vllm import revision_args
 
 CANARY_JOB = "qwen-large"
 CANARY_NAME = "qwen-canary"
@@ -125,10 +126,7 @@ def _canary_row():
     serving = {key: value for key, value in (row.get("serving") or {}).items() if key not in dropped}
     serving["vllm_args"] = [
         *serving.get("vllm_args", []),
-        "--revision",
-        REVISION,
-        "--tokenizer-revision",
-        REVISION,
+        *revision_args(REVISION),
         "--gpu-memory-utilization",
         util,
         "--max-num-batched-tokens",
@@ -141,6 +139,7 @@ def _canary_row():
         "served_model_id": MODEL_ID,
         "max_model_len": max_len,
         "min_disk_gb": None,
+        "revision": None,
         "serving": serving,
     }, {"gpu_memory_utilization": util, "max_model_len": max_len, "extra_args": extra}
 

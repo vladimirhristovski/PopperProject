@@ -105,8 +105,8 @@ def check_gpu_memory(job):
     return _result("memory", True, detail)
 
 
-def _model_cached(served_model_id):
-    return (hf_home() / "hub" / f"models--{served_model_id.replace('/', '--')}" / "refs" / "main").is_file()
+def _model_cached(served_model_id, revision=None):
+    return fetch.is_cached(served_model_id, revision)
 
 
 def check_hf_token(job):
@@ -114,7 +114,8 @@ def check_hf_token(job):
     serving = model.get("serving") or {}
     if not serving.get("gated"):
         return _result("token", True, "no Hugging Face token is needed for this model")
-    if any(os.environ.get(name) for name in TOKEN_ENVS) or _model_cached(model["served_model_id"]):
+    has_token = any(os.environ.get(name) for name in TOKEN_ENVS)
+    if has_token or _model_cached(model["served_model_id"], model.get("revision")):
         return _result("token", True, f"access to {model['served_model_id']} is available")
     fallback = serving.get("fallback") or DEFAULT_FALLBACK
     detail = f"{model['served_model_id']} needs a Hugging Face token (HF_TOKEN) and none is set; please {fallback}"
@@ -153,7 +154,7 @@ def prefetch_model(job, say=print):
     if model["backend"] != "vllm" or os.environ.get("POPPER_FAKE_BACKEND"):
         return None
     try:
-        fetch.download_model(model["served_model_id"], say=say)
+        fetch.download_model(model["served_model_id"], model.get("revision"), say=say)
     except fetch.DownloadError as e:
         return str(e)
     return None

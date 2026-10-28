@@ -64,7 +64,18 @@ def test_build_writes_snapshot_spec_and_job_json(db, registry, tmp_path):
     snapshot = json.loads((out / "snapshot.json").read_text(encoding="utf-8"))
     model = next(m for m in snapshot["models"] if m["name"] == MODEL)
     assert model["min_disk_gb"] == 45
+    assert model["revision"] is None
     assert json.loads((out / "spec.json").read_text(encoding="utf-8"))["name"] == "built_v1"
+
+
+def test_build_snapshot_carries_the_pinned_revision(db, registry, tmp_path):
+    out = tmp_path / "jobs" / "qwen"
+
+    build_job(db, "qwen", "qwen-large", _spec(tmp_path, ("qwen-large",)), out, _embedder(), data_dir=tmp_path)
+
+    snapshot = json.loads((out / "snapshot.json").read_text(encoding="utf-8"))
+    revisions = {m["name"]: m["revision"] for m in snapshot["models"] if m["revision"]}
+    assert revisions == {"qwen-large": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"}
 
 
 def test_build_refuses_a_snapshot_derived_from_test_hypotheses(db, registry, tmp_path):

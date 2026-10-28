@@ -10,12 +10,13 @@ RUN apt-get update -y \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install uv==0.13.5
 
+COPY popper_upgrade/constraints-vllm-env.txt /opt/popper/popper_upgrade/
 RUN --mount=type=cache,target=/tmp/uv-cache \
     uv venv --python 3.12 /opt/vllm-env \
-    && uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 torch==2.10.0
+    && uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 torch==2.10.0 -c /opt/popper/popper_upgrade/constraints-vllm-env.txt
 
 RUN --mount=type=cache,target=/tmp/uv-cache \
-    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 vllm==0.19.1 torch==2.10.0
+    uv pip install --python /opt/vllm-env/bin/python --torch-backend=cu128 vllm==0.19.1 torch==2.10.0 -c /opt/popper/popper_upgrade/constraints-vllm-env.txt
 
 RUN --mount=type=cache,target=/tmp/uv-cache \
     uv venv --python 3.10 /opt/popper-env \

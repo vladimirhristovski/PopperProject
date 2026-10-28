@@ -11,10 +11,12 @@ DEFAULT_MARGIN = 256
 
 
 @functools.cache
-def _tokenizer(model_id):
+def _tokenizer(model_id, revision=None):
     try:
         from transformers import AutoTokenizer
 
+        if revision:
+            return AutoTokenizer.from_pretrained(model_id, revision=revision, local_files_only=True)
         return AutoTokenizer.from_pretrained(model_id, local_files_only=True)
     except Exception:
         return None
@@ -36,9 +38,9 @@ def _prompt_text(data):
     return parts, len(messages)
 
 
-def estimate_prompt_tokens(model_id, data):
+def estimate_prompt_tokens(model_id, data, revision=None):
     parts, count = _prompt_text(data)
-    tokenizer = _tokenizer(model_id) if model_id else None
+    tokenizer = _tokenizer(model_id, revision) if model_id else None
     if tokenizer is not None:
         try:
             return sum(len(tokenizer.encode(part, add_special_tokens=False)) for part in parts) + (
@@ -83,7 +85,7 @@ def _capped(data, model, overrides):
     context = model.get("max_model_len")
     if context:
         margin = overrides.get("context_margin", DEFAULT_MARGIN)
-        room = context - estimate_prompt_tokens(model.get("served_model_id"), data) - margin
+        room = context - estimate_prompt_tokens(model.get("served_model_id"), data, model.get("revision")) - margin
         limit = min(limit, max(room, 1))
     requested = data.get(key)
     if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0:
