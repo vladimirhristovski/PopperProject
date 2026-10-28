@@ -1,6 +1,7 @@
-import functools
 import json
 import math
+import threading
+import time
 
 from popper_upgrade.serving.usage import identity_request
 
@@ -8,18 +9,45 @@ CHAT_PATH = "/v1/chat/completions"
 CHARS_PER_TOKEN = 3
 MESSAGE_OVERHEAD_TOKENS = 8
 DEFAULT_MARGIN = 256
+TOKENIZER_RETRY_S = 60
+
+_loaded = {}
+_failed = {}
+_lock = threading.Lock()
 
 
-@functools.cache
+def reset_tokenizers():
+    with _lock:
+        _loaded.clear()
+        _failed.clear()
+
+
+def _load_tokenizer(model_id, revision):
+    from transformers import AutoTokenizer
+
+    if revision:
+        return AutoTokenizer.from_pretrained(model_id, revision=revision, local_files_only=True)
+    return AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+
+
 def _tokenizer(model_id, revision=None):
+    key = (model_id, revision)
+    with _lock:
+        if key in _loaded:
+            return _loaded[key]
+        failed_at = _failed.get(key)
+        if failed_at is not None and time.monotonic() - failed_at < TOKENIZER_RETRY_S:
+            return None
     try:
-        from transformers import AutoTokenizer
-
-        if revision:
-            return AutoTokenizer.from_pretrained(model_id, revision=revision, local_files_only=True)
-        return AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+        tokenizer = _load_tokenizer(model_id, revision)
     except Exception:
+        with _lock:
+            _failed[key] = time.monotonic()
         return None
+    with _lock:
+        _loaded[key] = tokenizer
+        _failed.pop(key, None)
+    return tokenizer
 
 
 def _text_of(content):
@@ -30,16 +58,16 @@ def _text_of(content):
     return ""
 
 
-def _prompt_text(data):
+def _prompt_text(data, count_tools=True):
     messages = data.get("messages") if isinstance(data.get("messages"), list) else []
     parts = [_text_of(m.get("content")) for m in messages if isinstance(m, dict)]
-    if data.get("tools"):
+    if count_tools and data.get("tools"):
         parts.append(json.dumps(data["tools"]))
     return parts, len(messages)
 
 
-def estimate_prompt_tokens(model_id, data, revision=None):
-    parts, count = _prompt_text(data)
+def estimate_prompt_tokens(model_id, data, revision=None, count_tools=True):
+    parts, count = _prompt_text(data, count_tools)
     tokenizer = _tokenizer(model_id, revision) if model_id else None
     if tokenizer is not None:
         try:
@@ -85,7 +113,10 @@ def _capped(data, model, overrides):
     context = model.get("max_model_len")
     if context:
         margin = overrides.get("context_margin", DEFAULT_MARGIN)
-        room = context - estimate_prompt_tokens(model.get("served_model_id"), data, model.get("revision")) - margin
+        prompt = estimate_prompt_tokens(
+            model.get("served_model_id"), data, model.get("revision"), count_tools=not model.get("strip_tools")
+        )
+        room = context - prompt - margin
         limit = min(limit, max(room, 1))
     requested = data.get(key)
     if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0:

@@ -12,6 +12,7 @@ from cluster import canary, fetch, preflight
 from cluster import job as job_module
 from popper_upgrade.models import ServingError
 from popper_upgrade.serving.rewrite import request_rewriter
+from popper_upgrade.serving.vllm import ModelVllmServer, plan_launch
 
 SOFTWARE = {"vllm": "0.19.1", "torch": "2.10.0", "triton": "3.6.0", "flashinfer-python": "0.6.0"}
 LONG_BODY = {
@@ -135,11 +136,10 @@ def test_the_launch_row_is_qwen_large_with_only_the_listed_differences(env, tmp_
         canary.REVISION,
         "--tokenizer-revision",
         canary.REVISION,
-        "--gpu-memory-utilization",
-        "0.30",
         "--max-num-batched-tokens",
         "2048",
     ]
+    assert row["serving"]["gpu_util"] == 0.3
     assert args.count("--revision") == args.count("--tokenizer-revision") == 1
     assert row["revision"] is None
     assert "weights_gb" not in row["serving"]
@@ -148,13 +148,32 @@ def test_the_launch_row_is_qwen_large_with_only_the_listed_differences(env, tmp_
     assert row["strip_tools"] is True
 
 
+@pytest.mark.parametrize(("util", "expected"), [(None, "0.30"), ("0.78", "0.78"), ("0.85", "0.85")])
+def test_the_canary_command_carries_the_memory_flag_exactly_once(env, tmp_path, capsys, monkeypatch, util, expected):
+    monkeypatch.setenv("POPPER_VLLM_PYTHON", "/opt/vllm-env/bin/python")
+    monkeypatch.setenv(canary.EXTRA_ARGS_ENV, "--max-num-seqs 8")
+    if util:
+        monkeypatch.setenv(canary.GPU_UTIL_ENV, util)
+    _run(tmp_path, capsys)
+    row = env.rows[0]
+
+    server = ModelVllmServer(row["served_model_id"], 8000, launch=row)
+    command = server.command(plan_launch(row, 4.0))
+
+    assert command.count("--gpu-memory-utilization") == 1
+    assert command[command.index("--gpu-memory-utilization") + 1] == expected
+    assert command.count("--max-num-batched-tokens") == 1
+    assert command[-2:] == ["--max-num-seqs", "8"]
+
+
 def test_environment_overrides_change_only_memory_and_context(env, tmp_path, capsys, monkeypatch):
     monkeypatch.setenv(canary.GPU_UTIL_ENV, "0.85")
     monkeypatch.setenv(canary.MAX_LEN_ENV, "4096")
 
     _, _, document = _run(tmp_path, capsys)
 
-    assert env.rows[0]["serving"]["vllm_args"][-3] == "0.85"
+    assert env.rows[0]["serving"]["gpu_util"] == 0.85
+    assert "--gpu-memory-utilization" not in env.rows[0]["serving"]["vllm_args"]
     assert env.rows[0]["max_model_len"] == 4096
     assert document["launch"]["effective"] == {
         "gpu_memory_utilization": "0.85",

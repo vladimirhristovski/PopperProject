@@ -43,12 +43,13 @@ def _serve(monkeypatch, body):
     started = []
 
     class Serving:
-        def __init__(self, model):
+        def __init__(self, model, log_dir=None):
+            self.log_dir = log_dir
             self.counter = UsageCounter()
             self.proxy = UsageProxy(0, None, self.counter, upstream_url=f"http://127.0.0.1:{upstream.port}")
 
         def __enter__(self):
-            started.append(1)
+            started.append(self.log_dir)
             self.proxy.start()
             self.counter.port = self.proxy.port
             return self.counter
@@ -138,7 +139,7 @@ def test_disk_check_uses_the_nearest_existing_parent(healthy, answering, monkeyp
 
 def test_model_failure_is_reported_in_plain_detail(healthy, monkeypatch, tmp_path):
     class Broken:
-        def __init__(self, model):
+        def __init__(self, model, log_dir=None):
             pass
 
         def __enter__(self):
@@ -434,3 +435,103 @@ def test_download_check_is_skipped_for_the_fake_backend(healthy, monkeypatch):
     monkeypatch.setattr(preflight.fetch, "download_model", lambda *a, **k: pytest.fail("must not download"))
 
     assert preflight.check_download(healthy)["ok"]
+
+
+REVISION = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+
+
+def _cached_job(tmp_path, monkeypatch, free_gb, shards=("a.safetensors", "b.safetensors"), present=None):
+    job = write_job(tmp_path / "job", min_disk_gb=60, revision=REVISION)
+    served = "casperhansen/llama-3.3-70b-instruct-awq"
+    snapshot = tmp_path / "hf" / "hub" / f"models--{served.replace('/', '--')}" / "snapshots" / REVISION
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    weight_map = {f"layer{i}": name for i, name in enumerate(shards)}
+    (snapshot / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    for name in shards if present is None else present:
+        (snapshot / name).write_bytes(b"w")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setattr(preflight.shutil, "disk_usage", lambda path: Usage(10**12, 0, free_gb * preflight.GB))
+    return job
+
+
+def test_a_fully_cached_model_passes_the_disk_check_even_when_little_is_free(tmp_path, monkeypatch):
+    job = _cached_job(tmp_path, monkeypatch, free_gb=3)
+
+    disk = preflight.check_disk(job)
+
+    assert disk["ok"] is True
+    assert "3 GB free" in disk["detail"]
+    assert "already" in disk["detail"]
+    assert str(tmp_path / "hf") in disk["detail"]
+
+
+def test_a_partly_cached_model_still_needs_the_full_disk_requirement(tmp_path, monkeypatch):
+    job = _cached_job(tmp_path, monkeypatch, free_gb=3, present=["a.safetensors"])
+
+    disk = preflight.check_disk(job)
+
+    assert disk["ok"] is False
+    assert "60 GB" in disk["detail"]
+    assert "only 3 GB is free" in disk["detail"]
+
+
+def test_a_model_cached_at_another_revision_still_needs_the_disk_requirement(tmp_path, monkeypatch):
+    job = _cached_job(tmp_path, monkeypatch, free_gb=3)
+    other = write_job(tmp_path / "other", min_disk_gb=60, revision="f" * 40)
+
+    assert preflight.check_disk(job)["ok"] is True
+    assert preflight.check_disk(other)["ok"] is False
+
+
+def test_an_uncached_model_with_enough_space_passes(tmp_path, monkeypatch):
+    job = _cached_job(tmp_path, monkeypatch, free_gb=100, present=[])
+
+    disk = preflight.check_disk(job)
+
+    assert disk["ok"] is True
+    assert "60 GB needed" in disk["detail"]
+
+
+def test_the_preflight_launch_is_logged_in_the_work_directory(healthy, answering, tmp_path):
+    work = tmp_path / "work"
+
+    result = preflight.run_preflight(healthy, work)
+
+    assert result["ok"] is True
+    assert answering == [work]
+
+
+def test_only_one_model_launch_happens_in_preflight(healthy, answering, tmp_path):
+    preflight.run_preflight(healthy, tmp_path / "work")
+
+    assert len(answering) == 1
+
+
+def test_a_failed_launch_adds_the_new_vllm_log_error_to_the_detail(healthy, monkeypatch, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "vllm.log").write_text("ERROR old failure from an earlier session\n")
+    size = (work / "vllm.log").stat().st_size
+
+    class Broken:
+        def __init__(self, model, log_dir=None):
+            self.log_dir = log_dir
+
+        def __enter__(self):
+            with (self.log_dir / "vllm.log").open("a") as handle:
+                handle.write("INFO starting\nRuntimeError: CUDA out of memory\n")
+            raise ServingError("vLLM did not start for demo-model")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(preflight, "serving_for", Broken)
+
+    result = preflight.run_preflight(healthy, work)
+
+    detail = _check(result, "model_answers")["detail"]
+    assert "vLLM did not start" in detail
+    assert "CUDA out of memory" in detail
+    assert "old failure" not in detail
+    assert (work / "vllm.log").stat().st_size > size

@@ -8,7 +8,8 @@ from pathlib import Path
 from cluster import fetch
 from cluster.common import LOCAL_HOST, load_baseline
 from cluster.fetch import hf_home
-from popper_upgrade.models import check_environment, serving_for
+from popper_upgrade.models import ServingError, check_environment, serving_for
+from popper_upgrade.serving import logs
 from popper_upgrade.serving.vllm import DEFAULT_FALLBACK, LaunchError, plan_launch
 from popper_upgrade.skills.embedding import Embedder
 
@@ -138,9 +139,13 @@ def _existing_parent(path):
 
 
 def check_disk(job):
-    required = model_row(job).get("min_disk_gb")
+    model = model_row(job)
+    required = model.get("min_disk_gb")
     target = hf_home()
     free = shutil.disk_usage(_existing_parent(target)).free / GB
+    if model["backend"] == "vllm" and fetch.weights_cached(model["served_model_id"], model.get("revision")):
+        detail = f"{free:.0f} GB free in {target}; the weights of {model['served_model_id']} are already there"
+        return _result("disk", True, detail)
     if required is None:
         return _result("disk", True, f"{free:.0f} GB free in {target}; no minimum is set for this model")
     if free < required:
@@ -205,14 +210,37 @@ def _ask(port, served_model_id):
         return json.load(response)
 
 
-def check_model_answers(job):
+def _log_size(workdir):
+    if workdir is None:
+        return 0
+    try:
+        return (Path(workdir) / logs.VLLM_LOG).stat().st_size
+    except OSError:
+        return 0
+
+
+def _new_log_error(workdir, start):
+    if workdir is None:
+        return None
+    text = logs.read_tail(Path(workdir) / logs.VLLM_LOG, start=start).decode("utf-8", errors="replace")
+    return logs.last_error_line(text)
+
+
+def check_model_answers(job, workdir=None):
     model = model_row(job)
     check_environment(model, "cluster")
-    with serving_for(model) as counter:
-        body = _ask(counter.port or model["port"], model["served_model_id"])
-        if not body.get("choices"):
-            return _result(MODEL_CHECK, False, "the model server answered without any text")
-        prompt, completion = counter.snapshot()
+    start = _log_size(workdir)
+    try:
+        with serving_for(model, workdir) as counter:
+            body = _ask(counter.port or model["port"], model["served_model_id"])
+            if not body.get("choices"):
+                return _result(MODEL_CHECK, False, "the model server answered without any text")
+            prompt, completion = counter.snapshot()
+    except ServingError as e:
+        line = _new_log_error(workdir, start)
+        if line:
+            raise ServingError(f"{e} (last line of the vLLM log: {line})") from e
+        raise
     if prompt is None or completion is None:
         return _result(MODEL_CHECK, False, "the model server answered but does not report token usage")
     return _result(MODEL_CHECK, True, f"{model['name']} answered ({prompt} prompt tokens, {completion} generated)")
@@ -231,9 +259,9 @@ CHECKS = (
 )
 
 
-def _run_check(name, function, job):
+def _run_check(name, function, *args):
     try:
-        return function(job)
+        return function(*args)
     except Exception as e:
         return _result(name, False, f"{type(e).__name__}: {e}")
 
@@ -249,7 +277,8 @@ def run_preflight(job, workdir):
         if name == MODEL_CHECK and not all(check["ok"] for check in checks):
             checks.append(_result(name, False, "not tried because an earlier check failed"))
             continue
-        checks.append(_run_check(name, globals()[function_name], job))
+        arguments = (job, workdir) if name == MODEL_CHECK else (job,)
+        checks.append(_run_check(name, globals()[function_name], *arguments))
     result = {"ok": all(check["ok"] for check in checks), "checks": checks}
     (workdir / "preflight.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

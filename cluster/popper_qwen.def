@@ -44,7 +44,6 @@ From: nvidia/cuda:12.8.1-runtime-ubuntu22.04
     export POPPER_VLLM_PYTHON=/opt/vllm-env/bin/python
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
     export HF_HOME=${POPPER_HF_HOME:-$PWD/hf_cache}
-    export TRANSFORMERS_CACHE=${HF_HOME}/transformers
 
 %runscript
     if [ "${1:-}" = "canary" ]; then

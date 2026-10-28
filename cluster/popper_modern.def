@@ -41,7 +41,6 @@ From: vllm/vllm-openai:v0.32.0-cu129
     export POPPER_VLLM_PYTHON=$(cat /opt/popper/vllm_python)
     export SENTENCE_TRANSFORMERS_HOME=/opt/popper/st
     export HF_HOME=${POPPER_HF_HOME:-$PWD/hf_cache}
-    export TRANSFORMERS_CACHE=${HF_HOME}/transformers
 
 %runscript
     exec /opt/popper-env/bin/python -m cluster.job run "$@"

@@ -124,11 +124,10 @@ def _canary_row():
     extra = shlex.split(os.environ.get(EXTRA_ARGS_ENV) or "")
     dropped = ("weights_gb", "kv_kb_per_token")
     serving = {key: value for key, value in (row.get("serving") or {}).items() if key not in dropped}
+    serving["gpu_util"] = float(util)
     serving["vllm_args"] = [
         *serving.get("vllm_args", []),
         *revision_args(REVISION),
-        "--gpu-memory-utilization",
-        util,
         "--max-num-batched-tokens",
         str(CHUNK_TOKENS),
         *extra,

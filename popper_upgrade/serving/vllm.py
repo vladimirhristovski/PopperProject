@@ -211,9 +211,9 @@ def has_launch_overrides(model):
 
 def plan_launch(model, vram_gb):
     large = vram_gb >= LARGE_GPU_GB
-    gpu_util = 0.90 if large else 0.95
-    context = model.get("max_model_len") or (LARGE_CONTEXT if large else SMALL_CONTEXT)
     serving = model.get("serving") or {}
+    gpu_util = serving.get("gpu_util") or (0.90 if large else 0.95)
+    context = model.get("max_model_len") or (LARGE_CONTEXT if large else SMALL_CONTEXT)
     weights = serving.get("weights_gb")
     kv = serving.get("kv_kb_per_token")
     if weights is not None and kv:
@@ -293,6 +293,7 @@ class ModelVllmServer(VllmServer):
         print(f"Starting vLLM: {' '.join(cmd)}")
         self.vllm_proc = self._spawn(cmd, env)
         print("Waiting for vLLM to be ready...")
+        began = time.monotonic()
         for _ in range(600):
             if self.vllm_proc.poll() is not None:
                 print("ERROR: vLLM process exited unexpectedly. Check output above.")
@@ -308,7 +309,7 @@ class ModelVllmServer(VllmServer):
             except Exception:
                 pass
             time.sleep(2)
-        print("ERROR: vLLM did not start within 20 minutes.")
+        print(f"ERROR: vLLM did not start within {round((time.monotonic() - began) / 60)} minutes.")
         return False
 
     def _signal_group(self, signum):

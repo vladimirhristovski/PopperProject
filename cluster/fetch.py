@@ -1,3 +1,4 @@
+import json
 import os
 import urllib.error
 import urllib.request
@@ -8,6 +9,10 @@ from huggingface_hub import snapshot_download
 HUB_TIMEOUT_S = 15
 DEFAULT_ENDPOINT = "https://huggingface.co"
 GB = 1024**3
+SERVING_PATTERNS = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja", "*.py"]
+WEIGHT_INDEX = "model.safetensors.index.json"
+SINGLE_WEIGHTS = "model.safetensors"
+CONFIG = "config.json"
 
 
 class DownloadError(Exception):
@@ -26,6 +31,32 @@ def is_cached(model_id, revision=None):
     if revision:
         return (_model_dir(model_id) / "snapshots" / revision).is_dir()
     return (_model_dir(model_id) / "refs" / "main").is_file()
+
+
+def _snapshot_dir(model_id, revision=None):
+    if revision:
+        return _model_dir(model_id) / "snapshots" / revision
+    try:
+        sha = (_model_dir(model_id) / "refs" / "main").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return _model_dir(model_id) / "snapshots" / sha if sha else None
+
+
+def weights_cached(model_id, revision=None):
+    if not is_cached(model_id, revision):
+        return False
+    snapshot = _snapshot_dir(model_id, revision)
+    if snapshot is None or not (snapshot / CONFIG).exists():
+        return False
+    index = snapshot / WEIGHT_INDEX
+    if not index.is_file():
+        return (snapshot / SINGLE_WEIGHTS).exists()
+    try:
+        shards = set(json.loads(index.read_text(encoding="utf-8"))["weight_map"].values())
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        return False
+    return bool(shards) and all((snapshot / name).exists() for name in shards)
 
 
 def hub_endpoint():
@@ -60,7 +91,9 @@ def download_model(model_id, revision=None, say=print):
         )
     say(f"Downloading {model_id} into {hf_home()} (files already there are skipped)...")
     try:
-        path = snapshot_download(model_id, revision=revision, cache_dir=str(hf_home() / "hub"))
+        path = snapshot_download(
+            model_id, revision=revision, cache_dir=str(hf_home() / "hub"), allow_patterns=SERVING_PATTERNS
+        )
     except Exception as e:
         raise DownloadError(f"downloading {model_id} failed ({type(e).__name__}: {e})") from e
     say(f"{model_id} is ready in {path}.")

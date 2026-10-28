@@ -3,6 +3,7 @@ import os
 import time
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -110,6 +111,24 @@ def test_plan_launch_without_settings_reproduces_the_baseline_rule():
     assert (big["max_model_len"], big["gpu_util"], big["quantization"], big["dtype"]) == (16384, 0.90, "awq", "float16")
     assert (small["max_model_len"], small["gpu_util"]) == (6144, 0.95)
     assert big["args"] == []
+
+
+def test_plan_launch_takes_an_explicit_memory_fraction():
+    plan = vllm_module.plan_launch(_model(serving={"gpu_util": 0.78}), 4.0)
+    default = vllm_module.plan_launch(_model(serving={"vllm_args": []}), 4.0)
+
+    assert plan["gpu_util"] == 0.78
+    assert default["gpu_util"] == 0.95
+    assert vllm_module.plan_launch(_model(serving={"gpu_util": 0.5}), 80.0)["gpu_util"] == 0.5
+
+
+def test_command_formats_the_explicit_memory_fraction():
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(serving={"gpu_util": 0.78}))
+
+    command = server.command(vllm_module.plan_launch(server.launch, 4.0))
+
+    assert command.count("--gpu-memory-utilization") == 1
+    assert command[command.index("--gpu-memory-utilization") + 1] == "0.78"
 
 
 def test_plan_launch_none_omits_quantization_and_keeps_extra_args():
@@ -265,3 +284,55 @@ def test_servers_start_in_their_own_session(tmp_path):
         assert os.getpgid(server.vllm_proc.pid) == server.vllm_proc.pid != os.getpgid(0)
     finally:
         server.stop()
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class _Alive:
+    def poll(self):
+        return None
+
+
+def _never_ready(monkeypatch, tmp_path, connect_seconds):
+    clock = _Clock()
+
+    class Refusing:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def settimeout(self, seconds):
+            pass
+
+        def connect_ex(self, address):
+            clock.now += connect_seconds
+            return 111
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(vllm_module, "time", clock)
+    monkeypatch.setattr(vllm_module, "detect_vram_gb", lambda: 80.0)
+    monkeypatch.setattr(vllm_module, "socket", SimpleNamespace(AF_INET=2, SOCK_STREAM=1, socket=Refusing))
+    server = vllm_module.ModelVllmServer("org/m", 8000, launch=_model(), log_path=tmp_path / "vllm.log")
+    monkeypatch.setattr(server, "_spawn", lambda cmd, env: _Alive())
+    return server, clock
+
+
+@pytest.mark.parametrize(("connect_seconds", "minutes"), [(0.0, 20), (2.0, 40)])
+def test_the_readiness_message_reports_the_time_waited(monkeypatch, tmp_path, capsys, connect_seconds, minutes):
+    server, clock = _never_ready(monkeypatch, tmp_path, connect_seconds)
+
+    assert server.start() is False
+
+    out = capsys.readouterr().out
+    assert f"vLLM did not start within {minutes} minutes." in out
+    assert clock.now == minutes * 60

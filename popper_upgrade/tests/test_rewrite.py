@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from popper_upgrade.serving import rewrite as rewrite_module
 from popper_upgrade.serving.rewrite import CHAT_PATH, request_rewriter
@@ -181,11 +182,11 @@ def test_tokenizer_is_loaded_at_the_pinned_revision_only(monkeypatch):
         return "tokenizer"
 
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
-    rewrite_module._tokenizer.cache_clear()
+    rewrite_module.reset_tokenizers()
 
     assert rewrite_module._tokenizer("org/pinned", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0") == "tokenizer"
     assert rewrite_module._tokenizer("org/plain") == "tokenizer"
-    rewrite_module._tokenizer.cache_clear()
+    rewrite_module.reset_tokenizers()
     assert calls == [
         (("org/pinned",), {"revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "local_files_only": True}),
         (("org/plain",), {"local_files_only": True}),
@@ -202,9 +203,96 @@ def test_output_cap_looks_up_the_tokenizer_with_the_models_revision(monkeypatch)
     assert seen == [("org/m", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0")]
 
 
-def test_unavailable_tokenizer_is_cached_as_none(monkeypatch):
-    rewrite_module._tokenizer.cache_clear()
+def test_unavailable_tokenizer_is_none(monkeypatch):
+    rewrite_module.reset_tokenizers()
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
     assert rewrite_module._tokenizer("no-such-org/no-such-model") is None
-    rewrite_module._tokenizer.cache_clear()
+    rewrite_module.reset_tokenizers()
+
+
+def _clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(rewrite_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    return now
+
+
+def test_a_failed_tokenizer_load_is_retried_only_after_the_interval(monkeypatch):
+    import transformers
+
+    now = _clock(monkeypatch)
+    attempts = []
+
+    def from_pretrained(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError("not cached yet")
+        return "tokenizer"
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
+    rewrite_module.reset_tokenizers()
+
+    assert rewrite_module._tokenizer("org/m") is None
+    assert rewrite_module._tokenizer("org/m") is None
+    assert len(attempts) == 1
+    now[0] += rewrite_module.TOKENIZER_RETRY_S - 1
+    assert rewrite_module._tokenizer("org/m") is None
+    assert len(attempts) == 1
+    now[0] += 1
+    assert rewrite_module._tokenizer("org/m") is None
+    assert len(attempts) == 2
+    now[0] += rewrite_module.TOKENIZER_RETRY_S
+    assert rewrite_module._tokenizer("org/m") == "tokenizer"
+    assert len(attempts) == 3
+    now[0] += 10 * rewrite_module.TOKENIZER_RETRY_S
+    assert rewrite_module._tokenizer("org/m") == "tokenizer"
+    assert len(attempts) == 3
+    rewrite_module.reset_tokenizers()
+
+
+def test_failures_are_tracked_per_model_and_revision(monkeypatch):
+    import transformers
+
+    _clock(monkeypatch)
+    seen = []
+
+    def from_pretrained(name, **kwargs):
+        seen.append((name, kwargs.get("revision")))
+        if name == "org/bad":
+            raise OSError("missing")
+        return name
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", from_pretrained)
+    rewrite_module.reset_tokenizers()
+
+    assert rewrite_module._tokenizer("org/bad") is None
+    assert rewrite_module._tokenizer("org/good") == "org/good"
+    assert rewrite_module._tokenizer("org/good", "a" * 40) == "org/good"
+    assert seen == [("org/bad", None), ("org/good", None), ("org/good", "a" * 40)]
+    rewrite_module.reset_tokenizers()
+
+
+def _tool_payload():
+    return {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "t" * 30000}]}
+
+
+def test_output_cap_ignores_tools_when_the_model_strips_them(monkeypatch):
+    _no_tokenizer(monkeypatch)
+    stripped = {**_capped_model(), "strip_tools": True}
+    kept = {**_capped_model(), "strip_tools": False}
+
+    short = _sent_max(stripped, {"messages": [{"role": "user", "content": "hi"}]})
+
+    assert _sent_max(stripped, _tool_payload()) == short == 4096
+    assert _sent_max(kept, _tool_payload()) < 12288 - 256 - 1000
+
+
+def test_estimate_counts_tools_unless_told_otherwise(monkeypatch):
+    _no_tokenizer(monkeypatch)
+    payload = _tool_payload()
+
+    with_tools = rewrite_module.estimate_prompt_tokens("m", payload)
+    without = rewrite_module.estimate_prompt_tokens("m", payload, count_tools=False)
+
+    assert with_tools > without + 9000
+    assert without == rewrite_module.estimate_prompt_tokens("m", {"messages": payload["messages"]})
