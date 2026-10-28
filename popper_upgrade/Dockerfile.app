@@ -1,6 +1,9 @@
-FROM python:3.10-slim
+FROM python:3.10-slim@sha256:6ff506466f8b1e981719b468cc0023b8ef000b983cdec0eafe119d01f379e31d
 
 WORKDIR /app
+
+RUN useradd --create-home --uid 1000 app \
+    && chown app:app /app
 
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends git \
@@ -15,6 +18,8 @@ COPY popper_upgrade/requirements.txt /tmp/popper-requirements.txt
 COPY popper_upgrade/requirements-app.txt /tmp/popper-requirements-app.txt
 RUN pip install -r /tmp/popper-requirements.txt -r /tmp/popper-requirements-app.txt
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
 COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install -r /tmp/requirements-dev.txt pytest-playwright==0.10.0 playwright==1.64.0 \
     && playwright install --with-deps chromium
@@ -22,12 +27,20 @@ RUN pip install -r /tmp/requirements-dev.txt pytest-playwright==0.10.0 playwrigh
 RUN python -c "import huggingface_hub as h; assert h.__version__ == '0.30.0', h.__version__" \
     && ! (pip check | grep -v -E '^popper-agent [^ ]+ requires ipython, which is not installed\.$')
 
+RUN mkdir -p /var/popper/trajectories /var/popper/data \
+    && chown app:app /var/popper/trajectories /var/popper/data
+
+USER app
+
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
-COPY pyproject.toml /app/pyproject.toml
-COPY popper_upgrade/ /app/popper_upgrade/
-COPY cluster/ /app/cluster/
-COPY local/ /app/local/
-COPY baseline_experiment/config.py baseline_experiment/popper_common.py baseline_experiment/test3_local.py /app/baseline_experiment/
+COPY --chown=app:app pyproject.toml /app/pyproject.toml
+COPY --chown=app:app popper_upgrade/ /app/popper_upgrade/
+COPY --chown=app:app cluster/ /app/cluster/
+COPY --chown=app:app local/ /app/local/
+COPY --chown=app:app baseline_experiment/config.py baseline_experiment/popper_common.py baseline_experiment/test3_local.py /app/baseline_experiment/
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3)"]
 
 CMD ["python", "-m", "popper_upgrade.app.main"]

@@ -1,6 +1,9 @@
-FROM python:3.10-slim
+FROM python:3.10-slim@sha256:6ff506466f8b1e981719b468cc0023b8ef000b983cdec0eafe119d01f379e31d
 
 WORKDIR /app
+
+RUN useradd --create-home --uid 1000 app \
+    && chown app:app /app
 
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends git \
@@ -18,12 +21,14 @@ RUN pip install -r /tmp/popper-requirements.txt -r /tmp/popper-requirements-app.
 COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN pip install -r /tmp/requirements-dev.txt
 
+USER app
+
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
-COPY pyproject.toml /app/pyproject.toml
-COPY popper_upgrade/ /app/popper_upgrade/
-COPY cluster/ /app/cluster/
-COPY local/ /app/local/
-COPY baseline_experiment/config.py baseline_experiment/popper_common.py baseline_experiment/test3_local.py /app/baseline_experiment/
+COPY --chown=app:app pyproject.toml /app/pyproject.toml
+COPY --chown=app:app popper_upgrade/ /app/popper_upgrade/
+COPY --chown=app:app cluster/ /app/cluster/
+COPY --chown=app:app local/ /app/local/
+COPY --chown=app:app baseline_experiment/config.py baseline_experiment/popper_common.py baseline_experiment/test3_local.py /app/baseline_experiment/
 
-CMD ["python", "-m", "pytest", "popper_upgrade/tests/", "-v"]
+CMD ["python", "-m", "pytest", "popper_upgrade/tests/", "-v", "--cov"]

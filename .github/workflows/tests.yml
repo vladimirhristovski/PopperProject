@@ -2,12 +2,18 @@ name: Tests
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build test image
         run: docker build -f popper_upgrade/Dockerfile.test -t popper-upgrade-test .
       - name: Run tests
@@ -16,3 +22,27 @@ jobs:
         run: docker run --rm popper-upgrade-test ruff check popper_upgrade/ cluster/ local/
       - name: Check shared pins
         run: docker run --rm -v "$PWD/baseline_experiment/requirements.txt:/tmp/baseline-requirements.txt" popper-upgrade-test python -m popper_upgrade.tools.check_pins popper_upgrade/requirements.txt /tmp/baseline-requirements.txt
+  test-db:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: popper
+          POSTGRES_PASSWORD: popper
+          POSTGRES_DB: popper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U popper -d popper"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build test image
+        run: docker build -f popper_upgrade/Dockerfile.test -t popper-upgrade-test .
+      - name: Run db tests
+        run: docker run --rm --network host -e POPPER_DB_DSN=postgresql://popper:popper@localhost:5432/popper popper-upgrade-test python -m pytest popper_upgrade/tests -m db -v

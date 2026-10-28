@@ -1,3 +1,8 @@
+[project]
+name = "popper-upgrade"
+version = "0.1.0"
+requires-python = ">=3.10"
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -16,4 +21,12 @@ markers = [
     "db: tests that need a running database",
     "e2e: end-to-end tests that call real model endpoints",
 ]
-addopts = "-m 'not db and not e2e'"
+addopts = "-m 'not db and not e2e' -ra --strict-markers --strict-config"
+testpaths = ["popper_upgrade/tests"]
+
+[tool.coverage.run]
+source = ["popper_upgrade", "cluster", "local"]
+omit = ["popper_upgrade/tests/*"]
+
+[tool.coverage.report]
+fail_under = 76
